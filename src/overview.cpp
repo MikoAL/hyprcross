@@ -77,6 +77,10 @@ namespace {
     constexpr double FLING_MS       = 120.0;
     constexpr int    SCROLL_IDLE_MS = 60;
 
+    // A drag moves along one axis only, picked by whichever way the fingers go
+    // first; this much movement (grid steps) decides it.
+    constexpr double AXIS_LOCK_DIST = 0.08;
+
     // How far behind the highlight the view trails (time constant, ms).
     constexpr double CAMERA_LAG_MS = 70.0;
 
@@ -110,6 +114,8 @@ namespace {
         Time::steady_tp                                           cameraTime; // last camera step
         Vector2D                                                  raw;        // where the fingers put the highlight, before the magnet
         bool                                                      dragging = false;
+        Vector2D                                                  unlocked; // movement before the axis is picked
+        enum : uint8_t { AXIS_NONE, AXIS_X, AXIS_Y }              dragAxis = AXIS_NONE;
         std::deque<std::pair<uint32_t, Vector2D>>                 dragRecent;
         SP<CEventLoopTimer>                                       scrollTimer;
         std::deque<std::pair<uint32_t, double>>                   recent;
@@ -287,13 +293,34 @@ namespace {
     }
 
     // Fingers moved the highlight by `d` grid steps.
-    void drag(const Vector2D& d, uint32_t time) {
+    void drag(Vector2D d, uint32_t time) {
         auto& o = *g_ov;
         if (!o.dragging) {
             o.dragging = true;
             o.raw      = o.highlight->value();
+            o.dragAxis = SOverview::AXIS_NONE;
+            o.unlocked = {};
         }
-        o.raw = clampToGrid(o, o.raw + d);
+
+        Vector2D along = d;
+        if (o.dragAxis == SOverview::AXIS_NONE) {
+            o.unlocked = o.unlocked + d;
+            if (std::max(std::abs(o.unlocked.x), std::abs(o.unlocked.y)) < AXIS_LOCK_DIST)
+                return;
+            o.dragAxis = std::abs(o.unlocked.x) >= std::abs(o.unlocked.y) ? SOverview::AXIS_X : SOverview::AXIS_Y;
+            along      = o.unlocked;
+            // stay on the current thumbnail's row/column across the other axis
+            if (const auto C = cellFor(o, o.target)) {
+                if (o.dragAxis == SOverview::AXIS_X)
+                    o.raw.y = C->y;
+                else
+                    o.raw.x = C->x;
+            }
+        }
+        along = o.dragAxis == SOverview::AXIS_X ? Vector2D{along.x, 0.0} : Vector2D{0.0, along.y};
+
+        o.raw = clampToGrid(o, o.raw + along);
+        d     = along;
         o.dragRecent.emplace_back(time, d);
         while (o.dragRecent.size() > 2 && time - o.dragRecent.front().first > VELOCITY_MS)
             o.dragRecent.pop_front();
