@@ -5,10 +5,12 @@
 // to the grid (1); the anchor thumbnail is the one that grows to fill the
 // screen at 0 (where it opened from, or where it is closing to).
 //
-// Selection is a highlight frame of its own: fingers (3-finger swipes, 2-finger
-// scrolling) push it around freely, a magnet makes it cling to thumbnails, and
-// on release it springs onto the nearest one. Thumbnails swell as it nears
-// them, and the view trails behind it.
+// Selection is a highlight frame of its own that springs from thumbnail to
+// thumbnail, one step at a time like the arrow keys; finger travel (3-finger
+// swipes, 2-finger scrolling) is counted out into those steps. Thumbnails swell
+// as it nears them and the view trails behind it. Opening, it starts as the
+// screen's edge and shrinks with the current workspace; closing, it grows back
+// out with the picked one.
 //
 // Drawing hooks into render.stage (the last moment, so it covers everything,
 // fullscreen windows included) rather than replacing renderWorkspace like
@@ -69,17 +71,19 @@ namespace {
     constexpr double FLICK_SPEED = 0.004;
     constexpr int    VELOCITY_MS = 80;
 
-    // Moving the highlight: finger travel per thumbnail for 3-finger swipes and
-    // 2-finger scrolling, how far a flick carries it on release (velocity times
-    // this), and how long scrolling must pause to count as letting go.
-    constexpr double SWIPE_DIST     = 150.0;
-    constexpr double SCROLL_DIST    = 120.0;
-    constexpr double FLING_MS       = 120.0;
+    // Moving the highlight: finger travel per step for 3-finger swipes and
+    // 2-finger scrolling, and how long scrolling must pause to count as letting go.
+    constexpr double SWIPE_DIST     = 250.0;
+    constexpr double SCROLL_DIST    = 200.0;
     constexpr int    SCROLL_IDLE_MS = 60;
 
-    // A drag moves along one axis only, picked by whichever way the fingers go
-    // first; this much movement (grid steps) decides it.
-    constexpr double AXIS_LOCK_DIST = 0.08;
+    // A drag steps along one axis only, picked by whichever way the fingers go
+    // first; this much movement (fraction of a step) decides it.
+    constexpr double AXIS_LOCK_DIST = 0.1;
+
+    // The highlight frame is hidden while the overview is this close to shut,
+    // so it doesn't linger on the screen edge.
+    constexpr float FRAME_FADE = 0.15F;
 
     // How far behind the highlight the view trails (time constant, ms).
     constexpr double CAMERA_LAG_MS = 70.0;
@@ -112,11 +116,9 @@ namespace {
         PHLANIMVAR<Vector2D>                                      highlight;  // grid position of the highlight frame
         Vector2D                                                  camera;     // grid position at the screen centre
         Time::steady_tp                                           cameraTime; // last camera step
-        Vector2D                                                  raw;        // where the fingers put the highlight, before the magnet
         bool                                                      dragging = false;
-        Vector2D                                                  unlocked; // movement before the axis is picked
+        Vector2D                                                  travel; // finger travel not yet turned into steps
         enum : uint8_t { AXIS_NONE, AXIS_X, AXIS_Y }              dragAxis = AXIS_NONE;
-        std::deque<std::pair<uint32_t, Vector2D>>                 dragRecent;
         SP<CEventLoopTimer>                                       scrollTimer;
         std::deque<std::pair<uint32_t, double>>                   recent;
         bool                                                      tracking = false;
@@ -161,42 +163,6 @@ namespace {
 
     CBox cellBox(const SOverview& o, const PHLMONITOR& mon, const SCell& c) {
         return gridBox(o, mon, posOf(c), 1.0 + (SELECTED_SCALE - 1.0) * nearness(o, c));
-    }
-
-    const SCell* nearestCell(const SOverview& o, const Vector2D& pos) {
-        const SCell* best     = nullptr;
-        double       bestDist = INFINITY;
-        for (auto const& c : o.cells) {
-            const auto   D    = pos - posOf(c);
-            const double DIST = D.x * D.x + D.y * D.y;
-            if (DIST < bestDist) {
-                best     = &c;
-                bestDist = DIST;
-            }
-        }
-        return best;
-    }
-
-    // The highlight clings to grid points: near one it barely moves, halfway
-    // between two it moves fast. Continuous, so it never jumps.
-    Vector2D magnet(const Vector2D& raw) {
-        auto axis = [](double v) {
-            const double N = std::round(v);
-            const double D = v - N;
-            return N + std::copysign(0.5 * std::pow(2.0 * std::abs(D), 1.5), D);
-        };
-        return {axis(raw.x), axis(raw.y)};
-    }
-
-    // Keep the fingers from pushing the highlight far past the grid.
-    Vector2D clampToGrid(const SOverview& o, const Vector2D& pos) {
-        Vector2D lo{INFINITY, INFINITY}, hi{-INFINITY, -INFINITY};
-        for (auto const& c : o.cells) {
-            lo = {std::min(lo.x, c.x), std::min(lo.y, c.y)};
-            hi = {std::max(hi.x, c.x), std::max(hi.y, c.y)};
-        }
-        constexpr double SLACK = 0.35;
-        return {std::clamp(pos.x, lo.x - SLACK, hi.x + SLACK), std::clamp(pos.y, lo.y - SLACK, hi.y + SLACK)};
     }
 
     const SCell* cellFor(const SOverview& o, WORKSPACEID id) {
@@ -283,75 +249,19 @@ namespace {
 
     // Spring the highlight (and with it the view) onto a thumbnail.
     void snapTo(const SCell& c) {
-        auto& o     = *g_ov;
-        o.target    = c.id;
-        o.raw       = posOf(c);
-        o.dragging  = false;
+        auto& o      = *g_ov;
+        o.target     = c.id;
         *o.highlight = posOf(c);
-        o.dragRecent.clear();
         damage();
     }
 
-    // Fingers moved the highlight by `d` grid steps.
-    void drag(Vector2D d, uint32_t time) {
-        auto& o = *g_ov;
-        if (!o.dragging) {
-            o.dragging = true;
-            o.raw      = o.highlight->value();
-            o.dragAxis = SOverview::AXIS_NONE;
-            o.unlocked = {};
-        }
-
-        Vector2D along = d;
-        if (o.dragAxis == SOverview::AXIS_NONE) {
-            o.unlocked = o.unlocked + d;
-            if (std::max(std::abs(o.unlocked.x), std::abs(o.unlocked.y)) < AXIS_LOCK_DIST)
-                return;
-            o.dragAxis = std::abs(o.unlocked.x) >= std::abs(o.unlocked.y) ? SOverview::AXIS_X : SOverview::AXIS_Y;
-            along      = o.unlocked;
-            // stay on the current thumbnail's row/column across the other axis
-            if (const auto C = cellFor(o, o.target)) {
-                if (o.dragAxis == SOverview::AXIS_X)
-                    o.raw.y = C->y;
-                else
-                    o.raw.x = C->x;
-            }
-        }
-        along = o.dragAxis == SOverview::AXIS_X ? Vector2D{along.x, 0.0} : Vector2D{0.0, along.y};
-
-        o.raw = clampToGrid(o, o.raw + along);
-        d     = along;
-        o.dragRecent.emplace_back(time, d);
-        while (o.dragRecent.size() > 2 && time - o.dragRecent.front().first > VELOCITY_MS)
-            o.dragRecent.pop_front();
-        o.highlight->setValueAndWarp(magnet(o.raw));
-        if (const auto C = nearestCell(o, o.raw))
-            o.target = C->id;
-        damage();
-    }
-
-    // Fingers lifted: settle on the nearest thumbnail, carried on by a flick.
-    void release() {
-        auto& o = *g_ov;
-        if (!o.dragging)
-            return;
-        Vector2D vel;
-        if (o.dragRecent.size() >= 2) {
-            Vector2D sum;
-            for (auto const& [_, d] : o.dragRecent)
-                sum = sum + d;
-            vel = sum / std::max<double>(o.dragRecent.back().first - o.dragRecent.front().first, 8.0);
-        }
-        if (const auto C = nearestCell(o, o.raw + vel * FLING_MS))
-            snapTo(*C);
-    }
-
-    // Keys and mouse wheels: to the neighbouring thumbnail, if there is one.
-    void moveBy(int dx, int dy) {
+    // Keys, mouse wheels and counted-out finger travel: one step to the
+    // neighbouring thumbnail, if there is one.
+    bool moveBy(int dx, int dy) {
         auto&      o   = *g_ov;
-        const auto CUR = std::ranges::find_if(o.cells, [&](const SCell& c) { return c.id == o.target; });
-        if (CUR == o.cells.end())
-            return;
+        const auto CUR = cellFor(o, o.target);
+        if (!CUR)
+            return false;
         const SCell* best = nullptr;
         for (auto const& c : o.cells) {
             if (dx && c.x == CUR->x + dx && (!best || std::abs(c.y - CUR->y) < std::abs(best->y - CUR->y)))
@@ -361,6 +271,40 @@ namespace {
         }
         if (best)
             snapTo(*best);
+        return best;
+    }
+
+    // Fingers moved `d` steps' worth. Whole steps move the highlight; the first
+    // bit of travel picks the axis for the rest of the drag.
+    void drag(const Vector2D& d) {
+        auto& o = *g_ov;
+        if (!o.dragging) {
+            o.dragging = true;
+            o.dragAxis = SOverview::AXIS_NONE;
+            o.travel   = {};
+        }
+        o.travel = o.travel + d;
+
+        if (o.dragAxis == SOverview::AXIS_NONE) {
+            if (std::max(std::abs(o.travel.x), std::abs(o.travel.y)) < AXIS_LOCK_DIST)
+                return;
+            o.dragAxis = std::abs(o.travel.x) >= std::abs(o.travel.y) ? SOverview::AXIS_X : SOverview::AXIS_Y;
+        }
+
+        double& t = o.dragAxis == SOverview::AXIS_X ? o.travel.x : o.travel.y;
+        while (std::abs(t) >= 1.0) {
+            const int DIR = t > 0 ? 1 : -1;
+            if (!(o.dragAxis == SOverview::AXIS_X ? moveBy(DIR, 0) : moveBy(0, DIR))) {
+                t = 0; // at the edge: don't bank travel, so turning back responds at once
+                break;
+            }
+            t -= DIR;
+        }
+    }
+
+    void release() {
+        if (g_ov)
+            g_ov->dragging = false;
     }
 
     // Zoom back into `id` and go away.
@@ -535,14 +479,15 @@ namespace {
         if (const auto ANCHOR = cellFor(o, o.anchor))
             drawCell(*ANCHOR);
 
+        // the frame is the screen's edge at 0 and wraps the highlighted thumbnail at 1
         CBorderPassElement::SBorderData border;
-        border.box = toPixels(gridBox(o, MON, o.highlight->value(), SELECTED_SCALE));
+        border.box = toPixels(lerp(FULL, gridBox(o, MON, o.highlight->value(), SELECTED_SCALE), P));
         if (const auto GRAD = dynamic_cast<Config::CGradientValueData*>(PBORDER.ptr()))
             border.grad1 = *GRAD;
         else
             border.grad1 = Config::CGradientValueData{CHyprColor{1, 1, 1, 1}};
-        border.a          = P;
-        border.round      = std::round(*PROUNDING * SCALE);
+        border.a          = std::clamp(P / FRAME_FADE, 0.F, 1.F);
+        border.round      = std::round(*PROUNDING * P * SCALE);
         border.borderSize = std::round(BORDER_PX * SCALE);
         g_pHyprRenderer->m_renderPass.add(makeUnique<CBorderPassElement>(border));
     }
@@ -605,7 +550,7 @@ namespace {
             if (e.delta == 0)
                 return release();
             const double D = e.delta / SCROLL_DIST;
-            drag(HORIZONTAL ? Vector2D{D, 0.0} : Vector2D{0.0, D}, e.timeMs);
+            drag(HORIZONTAL ? Vector2D{D, 0.0} : Vector2D{0.0, D});
             g_ov->scrollTimer->updateTimeout(std::chrono::milliseconds(SCROLL_IDLE_MS));
         });
         o.workspaceListener = ev.workspace.active.listen([](PHLWORKSPACE ws) {
@@ -693,7 +638,6 @@ namespace cross::overview {
         o.progress->setUpdateCallback([](auto) { damage(); });
         o.highlight->setUpdateCallback([](auto) { damage(); });
         o.camera     = START;
-        o.raw        = START;
         o.cameraTime = Time::steadyNow();
 
         o.scrollTimer = makeShared<CEventLoopTimer>(std::nullopt, [](SP<CEventLoopTimer>, void*) {
@@ -769,13 +713,12 @@ namespace cross::overview {
     }
 
     int luaDrag(lua_State* L) {
-        const double   DX   = luaL_checknumber(L, 1);
-        const double   DY   = luaL_checknumber(L, 2);
-        const uint32_t TIME = sc<uint32_t>(luaL_optinteger(L, 3, 0));
+        const double DX = luaL_checknumber(L, 1);
+        const double DY = luaL_checknumber(L, 2);
         if (!g_ov || g_ov->closing)
             return 0;
         // the grid follows the fingers, so the highlight goes the other way
-        drag(Vector2D{-DX, -DY} / SWIPE_DIST, TIME);
+        drag(Vector2D{-DX, -DY} / SWIPE_DIST);
         return 0;
     }
 

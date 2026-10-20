@@ -235,10 +235,12 @@ local function ovKey(fn)
 end
 
 hl.define_submap("cross_overview", function()
-    hl.bind("left",   ovKey(function() plugin().overview_move(-1, 0) end))
-    hl.bind("right",  ovKey(function() plugin().overview_move(1, 0) end))
-    hl.bind("up",     ovKey(function() plugin().overview_move(0, -1) end))
-    hl.bind("down",   ovKey(function() plugin().overview_move(0, 1) end))
+    -- held arrows step once, then keep going at the keyboard's repeat rate
+    local held = { repeating = true }
+    hl.bind("left",   ovKey(function() plugin().overview_move(-1, 0) end), held)
+    hl.bind("right",  ovKey(function() plugin().overview_move(1, 0) end), held)
+    hl.bind("up",     ovKey(function() plugin().overview_move(0, -1) end), held)
+    hl.bind("down",   ovKey(function() plugin().overview_move(0, 1) end), held)
     hl.bind("Return", ovKey(ovPickSelected))
     hl.bind("Escape", ovKey(ovCancel))
     -- every other key goes nowhere while the overview is up
@@ -263,7 +265,7 @@ local function swipeStart(e)
     swipe.tracking = false
 
     local p = plugin()
-    if p and ov.open then return p.overview_drag(e.delta.x, e.delta.y, e.time_ms) end
+    if p and ov.open then return p.overview_drag(e.delta.x, e.delta.y) end
     if not p or ov.pinching then return end
     local col, row = current()
     local before, after
@@ -277,7 +279,7 @@ local function swipeStart(e)
 end
 
 local function swipeUpdate(e)
-    if ov.open then return plugin().overview_drag(e.delta.x, e.delta.y, e.time_ms) end
+    if ov.open then return plugin().overview_drag(e.delta.x, e.delta.y) end
     local d = e.delta[swipe.axis]
     swipe.moved = swipe.moved + d
     if swipe.tracking then plugin().swipe_update(d, e.time_ms) end

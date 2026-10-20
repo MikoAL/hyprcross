@@ -31,8 +31,8 @@ While the overview is up:
 
 | Input | Does |
 |---|---|
-| 3-finger swipe / 2-finger scroll | drag the highlight; it springs onto the nearest thumbnail when you let go |
-| Arrow keys / mouse wheel | move the highlight a column or slot |
+| 3-finger swipe / 2-finger scroll | step the highlight a column or slot per stretch of finger travel |
+| Arrow keys / mouse wheel | step the highlight (hold an arrow to keep going) |
 | Enter / spread 3 fingers | go to the highlighted workspace |
 | Click a thumbnail | go there |
 | Escape | back to where you were |
@@ -57,7 +57,7 @@ falls back to switching on release with no rubber band, and the pinch does nothi
 - `src/overview.cpp`: `THUMB_FRAC` / `SELECTED_SCALE` / `GAP_X` / `GAP_Y` (cross
   layout), `BACKDROP_DIM` / `UNSELECTED_ALPHA` / `BORDER_PX` (look),
   `PINCH_RANGE` / `OPEN_RATIO` / `FLICK_SPEED` (when a pinch opens it),
-  `SWIPE_DIST` / `SCROLL_DIST` / `FLING_MS` / `CAMERA_LAG_MS` (how the highlight moves).
+  `SWIPE_DIST` / `SCROLL_DIST` (finger travel per step), `CAMERA_LAG_MS` (how far the view trails).
 - `cross.lua`: `BUMP_PX` / `BUMP_MS` (the keyboard edge bump).
 - The settle animation is the `workspaces` animation in `hyprland.lua` (the `wsSnap` spring);
   the overview's zoom and slide use it too.
