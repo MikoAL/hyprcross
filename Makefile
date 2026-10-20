@@ -20,7 +20,11 @@ reload: install
 	-hyprctl plugin unload $(PREFIX)/hyprcross.so
 	hyprctl plugin load $(PREFIX)/hyprcross.so
 
+# Lua logic that doesn't need Hyprland (cross layout).
+test:
+	lua5.5 tests/cells_test.lua
+
 clean:
 	rm -f hyprcross.so
 
-.PHONY: all install reload clean
+.PHONY: all install reload test clean

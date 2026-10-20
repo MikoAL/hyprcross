@@ -110,6 +110,26 @@ local function slotTarget(col, row, dir, carry)
     return ws(col, target)
 end
 
+-- The overview's cross around (col, row): every column on the main row showing
+-- the slot it would open on, and the selected column's slots down through it,
+-- one empty slot past the last used one. x/y are grid steps from the selection.
+local function crossCells(col, row)
+    local cells = {}
+    for c = 1, COLUMNS do
+        if c ~= col then table.insert(cells, { id = columnTarget(c), x = c - col, y = 0 }) end
+    end
+    local last = row
+    for r = 0, MAX_ROWS - 1 do
+        if occupied(ws(col, r)) then last = math.max(last, math.min(r + 1, MAX_ROWS - 1)) end
+    end
+    for r = 0, last do
+        table.insert(cells, { id = ws(col, r), x = 0, y = r - row })
+    end
+    return cells
+end
+M.crossCells = crossCells
+M.lastRow    = lastRow
+
 local function horizontal(dir, carry)
     local id = columnTarget(current() + dir)
     if not id then return bump("x", dir) end
