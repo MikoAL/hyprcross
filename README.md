@@ -31,13 +31,16 @@ While the overview is up:
 
 | Input | Does |
 |---|---|
-| 3-finger swipe / 2-finger scroll | step the highlight a column or slot per stretch of finger travel |
+| 3-finger swipe | one step per swipe, decided when you lift (past halfway or a flick commits), like macOS |
+| 2-finger scroll | step continuously, like a held arrow key |
 | Arrow keys / mouse wheel | step the highlight (hold an arrow to keep going) |
 | Enter / spread 3 fingers | go to the highlighted workspace |
 | Click a thumbnail | go there |
 | Escape | back to where you were |
 
-Nothing else gets keyboard, scroll or click input while it's up.
+While your fingers are down the highlight leans toward where it's going, and
+stiffly at the edge of the grid. Nothing else gets keyboard, scroll or click
+input while it's up.
 
 ## Build
 
@@ -56,10 +59,11 @@ falls back to switching on release with no rubber band, and the pinch does nothi
   stretches), `FLICK_SPEED` / `COMMIT_RATIO` (when a swipe commits on release).
 - `src/overview.cpp`: `THUMB_FRAC` / `SELECTED_SCALE` / `GAP_X` / `GAP_Y` (cross
   layout), `BACKDROP_DIM` / `UNSELECTED_ALPHA` / `BORDER_PX` (look),
-  `THUMB_RES` / `BACKGROUND_EVERY` (thumbnail resolution and how often the
-  unhighlighted ones redraw: the frame-rate knobs),
+  `THUMB_RES` / `FOCUS_HZ` / `BACKGROUND_HZ` (thumbnail resolution and refresh
+  rates: the frame-rate knobs),
   `PINCH_RANGE` / `OPEN_RATIO` / `FLICK_SPEED` (when a pinch opens it),
-  `STEP_DIST` / `STEP_DIST_Y` (finger travel per sideways / up-down step, swipes and scrolling alike), `REPEAT_DELAY` (extra travel before a drag's second step), `CAMERA_LAG_MS` (how far the view trails).
+  `STEP_DIST` / `STEP_DIST_Y` (finger travel per sideways / up-down step, swipes and scrolling alike), `COMMIT_AMOUNT` / `FLICK_*` (when a swipe commits), `REPEAT_DELAY` (extra travel before
+  a scroll's second step), `LEAN_MAX` / `EDGE_RESIST` (the lean), `CAMERA_LAG_MS` (how far the view trails).
 - `cross.lua`: `BUMP_PX` / `BUMP_MS` (the keyboard edge bump).
 - The settle animation is the `workspaces` animation in `hyprland.lua` (the `wsSnap` spring);
   the overview's zoom and slide use it too.

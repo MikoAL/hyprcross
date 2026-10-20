@@ -6,9 +6,11 @@
 // screen at 0 (where it opened from, or where it is closing to).
 //
 // Selection is a highlight frame of its own that springs from thumbnail to
-// thumbnail, one step at a time like the arrow keys; finger travel (3-finger
-// swipes, 2-finger scrolling) is counted out into those steps. Thumbnails swell
-// as it nears them and the view trails behind it. Opening, it starts as the
+// thumbnail. A 3-finger swipe moves it at most one step, decided when the
+// fingers lift, the way macOS page swipes work; 2-finger scrolling and held
+// arrows step continuously. While the fingers are down the frame leans toward
+// where it's about to go (stiffly at the grid's edge). Thumbnails swell as it
+// nears them and the view trails behind it. Opening, it starts as the
 // screen's edge and shrinks with the current workspace; closing, it grows back
 // out with the picked one.
 //
@@ -68,9 +70,10 @@ namespace {
     // zooming to or from full screen gets full resolution, and only mid-zoom.
     constexpr double THUMB_RES = 0.35;
 
-    // The highlighted and zooming thumbnails redraw every frame; the rest take
-    // turns, each redrawing once every this many frames.
-    constexpr int BACKGROUND_EVERY = 3;
+    // How often thumbnail contents refresh (the overview's own motion runs at
+    // full frame rate regardless): the highlighted and zooming ones, and the rest.
+    constexpr double FOCUS_HZ      = 60.0;
+    constexpr double BACKGROUND_HZ = 30.0;
     constexpr int   BORDER_PX        = 3;
 
     // Pinch: how far the fingers close (in libinput scale) for the full zoom, and
@@ -88,11 +91,25 @@ namespace {
     constexpr double STEP_DIST      = 110.0;
     constexpr double STEP_DIST_Y    = 75.0;
 
-    // Like key repeat: within one drag, the second step takes this many steps'
-    // worth of travel, so a small swipe gives exactly one step and only a long
-    // one keeps going.
-    constexpr double REPEAT_DELAY = 1.8;
     constexpr int    SCROLL_IDLE_MS = 60;
+
+    // A 3-finger swipe, like macOS's trackSwipeEvent: it moves the highlight at
+    // most one step, decided on lift. It commits past COMMIT_AMOUNT of a step,
+    // or on a flick of at least FLICK_MIN_AMOUNT moving FLICK_STEP_SPEED (steps
+    // per ms) over the last FLICK_WINDOW_MS; pausing before lifting is no flick.
+    constexpr double COMMIT_AMOUNT    = 0.5;
+    constexpr double FLICK_MIN_AMOUNT = 0.15;
+    constexpr double FLICK_STEP_SPEED = 0.003;
+    constexpr int    FLICK_WINDOW_MS  = 100;
+
+    // 2-finger scrolling steps like key repeat: within one scroll, the second
+    // step takes this many steps' worth of travel.
+    constexpr double REPEAT_DELAY = 1.8;
+
+    // How far (fraction of a step) the frame leans toward where it's going, and
+    // how much stiffer that is where there's nowhere to go (macOS uses 4:1).
+    constexpr double LEAN_MAX    = 0.3;
+    constexpr double EDGE_RESIST = 0.25;
 
     // A drag steps along one axis only, picked by whichever way the fingers go
     // first; this much movement (fraction of a step) decides it.
@@ -128,15 +145,19 @@ namespace {
         WORKSPACEID                                               target = WORKSPACE_INVALID; // thumbnail the highlight is on or heading to
         WORKSPACEID                                               anchor = WORKSPACE_INVALID;
         std::unordered_map<WORKSPACEID, SP<Render::IFramebuffer>> fbs;
+        std::unordered_map<WORKSPACEID, Time::steady_tp>          drawnAt; // last thumbnail refresh
 
         PHLANIMVAR<float>                                         progress;
         PHLANIMVAR<Vector2D>                                      highlight;  // grid position of the highlight frame
+        PHLANIMVAR<Vector2D>                                      lean;       // on top of that, toward where it's about to go
         Vector2D                                                  camera;     // grid position at the screen centre
         Time::steady_tp                                           cameraTime; // last camera step
         bool                                                      dragging = false;
-        uint64_t                                                  frame    = 0;
-        Vector2D                                                  travel; // finger travel not yet turned into steps
+        enum : uint8_t { DRAG_SWIPE, DRAG_SCROLL }                dragKind = DRAG_SWIPE;
+        Vector2D                                                  travel; // in steps; for a swipe, its gesture amount
+        int                                                       dragDir   = 0; // a swipe's direction, fixed once it's known
         int                                                       dragSteps = 0;
+        std::deque<std::pair<Time::steady_tp, double>>            dragRecent; // movement along the axis, for flicks
         enum : uint8_t { AXIS_NONE, AXIS_X, AXIS_Y }              dragAxis = AXIS_NONE;
         SP<CEventLoopTimer>                                       scrollTimer;
         std::deque<std::pair<uint32_t, double>>                   recent;
@@ -166,9 +187,14 @@ namespace {
         return {c.x, c.y};
     }
 
-    // 1 with the highlight right on the cell, falling to 0 a cell away.
+    // Where the frame is drawn: the highlight plus its lean.
+    Vector2D framePos(const SOverview& o) {
+        return o.highlight->value() + o.lean->value();
+    }
+
+    // 1 with the frame right on the cell, falling to 0 a cell away.
     double nearness(const SOverview& o, const SCell& c) {
-        const auto D = o.highlight->value() - posOf(c);
+        const auto D = framePos(o) - posOf(c);
         return std::clamp(1.0 - std::sqrt(D.x * D.x + D.y * D.y), 0.0, 1.0);
     }
 
@@ -271,16 +297,15 @@ namespace {
         auto& o      = *g_ov;
         o.target     = c.id;
         *o.highlight = posOf(c);
+        *o.lean      = Vector2D{};
         damage();
     }
 
-    // Keys, mouse wheels and counted-out finger travel: one step to the
-    // neighbouring thumbnail, if there is one.
-    bool moveBy(int dx, int dy) {
-        auto&      o   = *g_ov;
+    // The thumbnail one step from the highlighted one, if there is one.
+    const SCell* neighbour(const SOverview& o, int dx, int dy) {
         const auto CUR = cellFor(o, o.target);
         if (!CUR)
-            return false;
+            return nullptr;
         const SCell* best = nullptr;
         for (auto const& c : o.cells) {
             if (dx && c.x == CUR->x + dx && (!best || std::abs(c.y - CUR->y) < std::abs(best->y - CUR->y)))
@@ -288,22 +313,49 @@ namespace {
             if (dy && c.x == CUR->x && c.y == CUR->y + dy)
                 best = &c;
         }
-        if (best)
-            snapTo(*best);
         return best;
     }
 
-    // Fingers moved `d` steps' worth. Whole steps move the highlight; the first
-    // bit of travel picks the axis for the rest of the drag.
-    void drag(const Vector2D& d) {
+    // Keys, mouse wheels and finger steps: one step, if there's somewhere to go.
+    bool moveBy(int dx, int dy) {
+        if (const auto N = neighbour(*g_ov, dx, dy)) {
+            snapTo(*N);
+            return true;
+        }
+        return false;
+    }
+
+    Vector2D alongAxis(const SOverview& o, double v) {
+        return o.dragAxis == SOverview::AXIS_X ? Vector2D{v, 0.0} : Vector2D{0.0, v};
+    }
+
+    const SCell* neighbourAlong(const SOverview& o, int dir) {
+        return o.dragAxis == SOverview::AXIS_X ? neighbour(o, dir, 0) : neighbour(o, 0, dir);
+    }
+
+    // Lean the frame `amount` (0..1) of the way toward the next thumbnail in `dir`.
+    void showLean(int dir, double amount) {
+        auto&        o    = *g_ov;
+        const double LEAN = amount * LEAN_MAX * (neighbourAlong(o, dir) ? 1.0 : EDGE_RESIST);
+        o.lean->setValueAndWarp(alongAxis(o, dir * LEAN));
+        damage();
+    }
+
+    // Fingers moved `d` steps' worth (3-finger swipe or 2-finger scroll). The
+    // first bit of travel picks the axis for the rest of the drag.
+    void drag(const Vector2D& d, bool scroll) {
         auto& o = *g_ov;
         if (!o.dragging) {
-            o.dragging = true;
+            o.dragging  = true;
+            o.dragKind  = scroll ? SOverview::DRAG_SCROLL : SOverview::DRAG_SWIPE;
             o.dragAxis  = SOverview::AXIS_NONE;
             o.travel    = {};
+            o.dragDir   = 0;
             o.dragSteps = 0;
+            o.dragRecent.clear();
         }
-        o.travel = o.travel + d;
+        const Vector2D BEFORE = o.travel;
+        o.travel              = o.travel + d;
 
         if (o.dragAxis == SOverview::AXIS_NONE) {
             if (std::max(std::abs(o.travel.x), std::abs(o.travel.y)) < AXIS_LOCK_DIST)
@@ -311,24 +363,73 @@ namespace {
             o.dragAxis = std::abs(o.travel.x) >= std::abs(o.travel.y) ? SOverview::AXIS_X : SOverview::AXIS_Y;
         }
 
-        double& t = o.dragAxis == SOverview::AXIS_X ? o.travel.x : o.travel.y;
-        while (true) {
-            const double NEED = o.dragSteps == 1 ? REPEAT_DELAY : 1.0;
-            if (std::abs(t) < NEED)
-                break;
-            const int DIR = t > 0 ? 1 : -1;
-            if (!(o.dragAxis == SOverview::AXIS_X ? moveBy(DIR, 0) : moveBy(0, DIR))) {
-                t = 0; // at the edge: don't bank travel, so turning back responds at once
-                break;
-            }
-            t -= DIR * NEED;
-            o.dragSteps++;
+        const bool   X     = o.dragAxis == SOverview::AXIS_X;
+        double&      t     = X ? o.travel.x : o.travel.y;
+        const double ALONG = X ? d.x : d.y;
+        const auto   NOW   = Time::steadyNow();
+        o.dragRecent.emplace_back(NOW, ALONG);
+        while (!o.dragRecent.empty() && NOW - o.dragRecent.front().first > std::chrono::milliseconds(FLICK_WINDOW_MS))
+            o.dragRecent.pop_front();
+
+        if (o.dragKind == SOverview::DRAG_SWIPE) {
+            if (!o.dragDir)
+                o.dragDir = t > 0 ? 1 : -1;
+            // macOS: never past one step, and turning back stops at where it
+            // started instead of crossing over (lockDirection)
+            const double AMOUNT = std::clamp(t * o.dragDir, 0.0, 1.0);
+            t                   = AMOUNT * o.dragDir;
+            showLean(o.dragDir, AMOUNT);
+            return;
         }
+
+        // scrolling: turning back starts counting afresh
+        const double PREV = X ? BEFORE.x : BEFORE.y;
+        if (PREV * ALONG < 0)
+            t = ALONG;
+
+        const double NEED = o.dragSteps == 1 ? REPEAT_DELAY : 1.0;
+        const int    DIR  = t > 0 ? 1 : -1;
+        if (std::abs(t) >= NEED) {
+            if (neighbourAlong(o, DIR)) {
+                X ? moveBy(DIR, 0) : moveBy(0, DIR);
+                o.dragSteps++;
+                t = 0; // no leftover: a fast scroll can't run on into the next step
+                return;
+            }
+            t = DIR * NEED; // at the edge: don't bank travel, so turning back responds at once
+        }
+        showLean(DIR, std::abs(t) / NEED);
     }
 
-    void release() {
-        if (g_ov)
-            g_ov->dragging = false;
+    // Fingers lifted (a cancelled swipe is one libinput gave up on, often as a
+    // finger lifted early: it can commit, but not by flick).
+    void release(bool cancelled) {
+        auto& o = *g_ov;
+        if (!o.dragging)
+            return;
+        o.dragging = false;
+
+        if (o.dragKind == SOverview::DRAG_SWIPE && o.dragAxis != SOverview::AXIS_NONE && o.dragDir) {
+            const double AMOUNT = std::abs(o.dragAxis == SOverview::AXIS_X ? o.travel.x : o.travel.y);
+            double       speed  = 0;
+            if (o.dragRecent.size() >= 2) {
+                double sum = 0;
+                for (auto const& [_, d] : o.dragRecent)
+                    sum += d * o.dragDir;
+                const double MS = std::chrono::duration<double, std::milli>(o.dragRecent.back().first - o.dragRecent.front().first).count();
+                // nothing recent means the fingers paused before lifting
+                if (Time::steadyNow() - o.dragRecent.back().first < std::chrono::milliseconds(FLICK_WINDOW_MS))
+                    speed = sum / std::max(MS, 8.0);
+            }
+            const bool COMMIT = AMOUNT >= COMMIT_AMOUNT || (!cancelled && AMOUNT >= FLICK_MIN_AMOUNT && speed >= FLICK_STEP_SPEED);
+            if (COMMIT && neighbourAlong(o, o.dragDir)) {
+                o.dragAxis == SOverview::AXIS_X ? moveBy(o.dragDir, 0) : moveBy(0, o.dragDir);
+                return;
+            }
+        }
+
+        *o.lean = Vector2D{};
+        damage();
     }
 
     // Zoom back into `id` and go away.
@@ -338,6 +439,7 @@ namespace {
         o.anchor  = id;
         if (const auto C = cellFor(o, id))
             *o.highlight = posOf(*C);
+        *o.lean = Vector2D{};
         if (o.progress->value() <= 0.001F) {
             finish();
             return;
@@ -358,9 +460,7 @@ namespace {
         g_pHyprRenderer->m_bBlockSurfaceFeedback = true;
 
         const CBox SCREEN{{}, mon->m_size};
-        o.frame++;
-        for (size_t i = 0; i < o.cells.size(); ++i) {
-            auto const& c = o.cells[i];
+        for (auto const& c : o.cells) {
             const auto WS = cross::find(c.id);
             if (!WS) {
                 o.fbs.erase(c.id);
@@ -369,11 +469,14 @@ namespace {
             if (c.id != o.anchor && !cellBox(o, mon, c).intersection(SCREEN).size().x)
                 continue;
 
-            auto&      fb       = o.fbs[c.id];
-            const bool ZOOMING  = o.progress->value() < 0.999F;
-            const bool PRIORITY = c.id == o.target || (c.id == o.anchor && ZOOMING);
-            if (fb && fb->isAllocated() && !PRIORITY && (o.frame + i) % BACKGROUND_EVERY)
+            auto&        fb      = o.fbs[c.id];
+            const bool   ZOOMING = o.progress->value() < 0.999F;
+            const double HZ      = c.id == o.target || (c.id == o.anchor && ZOOMING) ? FOCUS_HZ : BACKGROUND_HZ;
+            const auto   LAST    = o.drawnAt.find(c.id);
+            // a little slack so a 60 Hz refresh doesn't slip to every third 165 Hz frame
+            if (fb && fb->isAllocated() && LAST != o.drawnAt.end() && NOW - LAST->second < std::chrono::duration<double>(0.9 / HZ))
                 continue;
+            o.drawnAt[c.id] = NOW;
             if (!fb)
                 fb = g_pHyprRenderer->createFB("hyprcross overview");
             const bool     FULL_RES = c.id == o.anchor && o.progress->value() < 0.999F;
@@ -521,7 +624,7 @@ namespace {
 
         // the frame is the screen's edge at 0 and wraps the highlighted thumbnail at 1
         CBorderPassElement::SBorderData border;
-        border.box = toPixels(lerp(FULL, gridBox(o, MON, o.highlight->value(), SELECTED_SCALE), P));
+        border.box = toPixels(lerp(FULL, gridBox(o, MON, framePos(o), SELECTED_SCALE), P));
         if (const auto GRAD = dynamic_cast<Config::CGradientValueData*>(PBORDER.ptr()))
             border.grad1 = *GRAD;
         else
@@ -588,8 +691,8 @@ namespace {
                 return;
             }
             if (e.delta == 0)
-                return release();
-            drag(HORIZONTAL ? Vector2D{e.delta / STEP_DIST, 0.0} : Vector2D{0.0, e.delta / STEP_DIST_Y});
+                return release(false);
+            drag(HORIZONTAL ? Vector2D{e.delta / STEP_DIST, 0.0} : Vector2D{0.0, e.delta / STEP_DIST_Y}, true);
             g_ov->scrollTimer->updateTimeout(std::chrono::milliseconds(SCROLL_IDLE_MS));
         });
         o.workspaceListener = ev.workspace.active.listen([](PHLWORKSPACE ws) {
@@ -675,13 +778,15 @@ namespace cross::overview {
         const auto START  = cellFor(o, SELECTED) ? posOf(*cellFor(o, SELECTED)) : Vector2D{};
         Animation::mgr()->createAnimation(START, o.highlight, CONFIG, AVARDAMAGE_NONE);
         o.progress->setUpdateCallback([](auto) { damage(); });
+        Animation::mgr()->createAnimation(Vector2D{}, o.lean, CONFIG, AVARDAMAGE_NONE);
         o.highlight->setUpdateCallback([](auto) { damage(); });
+        o.lean->setUpdateCallback([](auto) { damage(); });
         o.camera     = START;
         o.cameraTime = Time::steadyNow();
 
         o.scrollTimer = makeShared<CEventLoopTimer>(std::nullopt, [](SP<CEventLoopTimer>, void*) {
             if (g_ov && !g_ov->closing)
-                release();
+                release(false);
         }, nullptr);
         g_pEventLoopManager->addTimer(o.scrollTimer);
 
@@ -757,13 +862,14 @@ namespace cross::overview {
         if (!g_ov || g_ov->closing)
             return 0;
         // the grid follows the fingers, so the highlight goes the other way
-        drag(Vector2D{-DX / STEP_DIST, -DY / STEP_DIST_Y});
+        drag(Vector2D{-DX / STEP_DIST, -DY / STEP_DIST_Y}, false);
         return 0;
     }
 
     int luaRelease(lua_State* L) {
+        const bool CANCELLED = lua_toboolean(L, 1);
         if (g_ov && !g_ov->closing)
-            release();
+            release(CANCELLED);
         return 0;
     }
 
