@@ -13,6 +13,8 @@
 // Swipe animation is modelled on Hyprland's CUnifiedWorkspaceSwipeGesture (0.56.2).
 
 #include <hyprland/src/plugins/PluginAPI.hpp>
+#include "shared.hpp"
+#include "overview.hpp"
 #include <hyprland/src/Compositor.hpp>
 #include <hyprland/src/state/WorkspaceState.hpp>
 #include <hyprland/src/desktop/state/FocusState.hpp>
@@ -35,7 +37,7 @@ extern "C" {
 #include <deque>
 #include <optional>
 
-inline HANDLE PHANDLE = nullptr;
+using namespace cross;
 
 namespace {
     // Rubber band: how far past an edge the screen can be pulled (fraction of the
@@ -77,12 +79,6 @@ namespace {
         return s.vertical ? Vector2D{0.0, v} : Vector2D{v, 0.0};
     }
 
-    PHLWORKSPACE find(WORKSPACEID id) {
-        if (id == WORKSPACE_INVALID)
-            return nullptr;
-        return State::workspaceState()->query().id(id).run();
-    }
-
     double rubber(double frac) {
         const double A = std::abs(frac);
         return std::copysign((1.0 - 1.0 / (A * RUBBER_COEFF / RUBBER_LIMIT + 1.0)) * RUBBER_LIMIT, frac);
@@ -96,29 +92,6 @@ namespace {
             sum += d;
         const double DT = std::max<double>(s.recent.back().first - s.recent.front().first, 8.0);
         return sum / DT;
-    }
-
-    // Layers above fullscreen windows (bars) are hidden on a fullscreen workspace;
-    // show them while two workspaces are on screen, as Hyprland's own swipe does.
-    void setTopLayerAlpha(const PHLMONITOR& mon, float a) {
-        for (auto const& ls : mon->m_layerSurfaceLayers[2])
-            *ls->alpha()[Desktop::View::LS_ALPHA_FADE] = a;
-    }
-
-    void applyFullscreenAlpha(const PHLMONITOR& mon, const PHLWORKSPACE& ws) {
-        const auto FSWINDOW = Fullscreen::controller()->getFullscreenWindow(ws);
-        const auto MODE     = FSWINDOW ? Fullscreen::controller()->getFullscreenModes(FSWINDOW).internal : Fullscreen::FSMODE_NONE;
-        const bool HIDE     = MODE == Fullscreen::FSMODE_FULLSCREEN &&
-            (!FSWINDOW || !Fullscreen::controller()->layoutManagedFS(FSWINDOW) ||
-             (ws->m_space && ws->m_space->algorithm() && Fullscreen::controller()->hasFullscreen(ws, true)));
-        setTopLayerAlpha(mon, HIDE ? 0.F : 1.F);
-    }
-
-    void hide(const PHLWORKSPACE& ws) {
-        if (!ws)
-            return;
-        ws->m_forceRendering = false;
-        ws->m_alpha->setValueAndWarp(0.F);
     }
 
     void render(SSwipe& s) {
@@ -333,6 +306,10 @@ namespace {
     }
 }
 
+bool cross::swiping() {
+    return g_swipe.has_value();
+}
+
 APICALL EXPORT std::string PLUGIN_API_VERSION() {
     return HYPRLAND_API_VERSION;
 }
@@ -354,13 +331,20 @@ APICALL EXPORT PLUGIN_DESCRIPTION_INFO PLUGIN_INIT(HANDLE handle) {
     ok &= HyprlandAPI::addLuaFunction(PHANDLE, "cross", "bump", luaBump);
     ok &= HyprlandAPI::addLuaFunction(PHANDLE, "cross", "settle", luaSettle);
     ok &= HyprlandAPI::addLuaFunction(PHANDLE, "cross", "active", luaActive);
+    ok &= HyprlandAPI::addLuaFunction(PHANDLE, "cross", "overview_begin", overview::luaBegin);
+    ok &= HyprlandAPI::addLuaFunction(PHANDLE, "cross", "overview_update", overview::luaUpdate);
+    ok &= HyprlandAPI::addLuaFunction(PHANDLE, "cross", "overview_end", overview::luaEnd);
+    ok &= HyprlandAPI::addLuaFunction(PHANDLE, "cross", "overview_select", overview::luaSelect);
+    ok &= HyprlandAPI::addLuaFunction(PHANDLE, "cross", "overview_close", overview::luaClose);
+    ok &= HyprlandAPI::addLuaFunction(PHANDLE, "cross", "overview_active", overview::luaActive);
     if (!ok)
         throw std::runtime_error("[hyprcross] couldn't register Lua functions (is the config Lua?)");
 
-    return {"hyprcross", "Finger-tracking swipes for PS-style cross workspaces", "miko", "0.1.0"};
+    return {"hyprcross", "Finger-tracking swipes and a pinch overview for PS-style cross workspaces", "miko", "0.1.0"};
 }
 
 APICALL EXPORT void PLUGIN_EXIT() {
+    overview::teardown();
     if (g_swipe && g_swipe->begin)
         g_swipe->begin->m_renderOffset->setValueAndWarp(Vector2D{});
     g_swipe.reset();

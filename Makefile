@@ -7,8 +7,10 @@ CXXFLAGS += -shared -fPIC -fno-gnu-unique -std=c++2c -Wall -Wextra -Wno-unused-p
 PKGS      = hyprland pixman-1 libdrm lua5.5
 PREFIX   ?= $(HOME)/.local/lib/hyprland
 
-hyprcross.so: src/main.cpp
-	$(CXX) $(CXXFLAGS) $(shell pkg-config --cflags $(PKGS)) $< -o $@
+SRCS = src/main.cpp src/overview.cpp
+
+hyprcross.so: $(SRCS) src/shared.hpp src/overview.hpp
+	$(CXX) $(CXXFLAGS) $(shell pkg-config --cflags $(PKGS)) $(SRCS) -o $@
 
 all: hyprcross.so
 
