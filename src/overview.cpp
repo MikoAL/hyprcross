@@ -385,7 +385,8 @@ namespace {
     }
 
     void callPick(WORKSPACEID id) {
-        const auto MGR = Config::Lua::mgr().lock();
+        // mgr() is uniquely owned: lock()ing it terminates Hyprland
+        const auto MGR = Config::Lua::mgr();
         if (!g_ov || g_ov->pickRef == LUA_NOREF || !MGR)
             return;
         MGR->callLuaFn(
