@@ -13,7 +13,7 @@ namespace cross::overview {
     int luaUpdate(lua_State* L);   // (scale, time_ms)
     int luaEnd(lua_State* L);      // (cancelled) -> bool open
     int luaDrag(lua_State* L);     // (dx, dy) fingers moved, touchpad units
-    int luaRelease(lua_State* L);  // (cancelled) fingers lifted
+    int luaRelease(lua_State* L);  // () fingers lifted
     int luaMove(lua_State* L);     // (dx, dy) to the neighbouring thumbnail
     int luaSelected(lua_State* L); // () -> id under the highlight
     int luaClose(lua_State* L);    // (id|nil)

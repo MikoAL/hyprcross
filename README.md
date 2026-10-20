@@ -31,8 +31,7 @@ While the overview is up:
 
 | Input | Does |
 |---|---|
-| 3-finger swipe | one step per swipe, decided when you lift (past halfway or a flick commits), like macOS |
-| 2-finger scroll | step continuously, like a held arrow key |
+| 3-finger swipe / 2-finger scroll | step the highlight, like a held arrow key: one step, then more as you keep going |
 | Arrow keys / mouse wheel | step the highlight (hold an arrow to keep going) |
 | Enter / spread 3 fingers | go to the highlighted workspace |
 | Click a thumbnail | go there |
@@ -62,8 +61,7 @@ falls back to switching on release with no rubber band, and the pinch does nothi
   `THUMB_RES` / `FOCUS_HZ` / `BACKGROUND_HZ` (thumbnail resolution and refresh
   rates: the frame-rate knobs),
   `PINCH_RANGE` / `OPEN_RATIO` / `FLICK_SPEED` (when a pinch opens it),
-  `STEP_DIST` / `STEP_DIST_Y` (finger travel per sideways / up-down step, swipes and scrolling alike), `COMMIT_AMOUNT` / `FLICK_*` (when a swipe commits), `REPEAT_DELAY` (extra travel before
-  a scroll's second step), `LEAN_MAX` / `EDGE_RESIST` (the lean), `CAMERA_LAG_MS` (how far the view trails).
+  `STEP_DIST` / `STEP_DIST_Y` (finger travel per sideways / up-down step, swipes and scrolling alike), `REPEAT_DELAY` (extra travel before a drag's second step), `LEAN_MAX` / `EDGE_RESIST` (the lean), `CAMERA_LAG_MS` (how far the view trails).
 - `cross.lua`: `BUMP_PX` / `BUMP_MS` (the keyboard edge bump).
 - The settle animation is the `workspaces` animation in `hyprland.lua` (the `wsSnap` spring);
   the overview's zoom and slide use it too.

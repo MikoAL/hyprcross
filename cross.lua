@@ -289,7 +289,7 @@ end
 -- Hyprland reads this one as "finish" (its error message also says "end", which is ignored).
 local function swipeEnd(e)
     if ov.open then
-        plugin().overview_release(e.cancelled)
+        plugin().overview_release()
     elseif swipe.tracking then
         plugin().swipe_end(e.cancelled)
     elseif not e.cancelled and math.abs(swipe.moved) > 50 then
