@@ -14,8 +14,8 @@
 --   Super + scroll                   prev/next column
 --   3-finger swipe                   drags the screen with your fingers (needs hyprcross.so);
 --                                    pushing past an edge rubber-bands
---   3-finger pinch in                overview: an XMB cross of all columns (needs hyprcross.so);
---                                    swipes/arrows move, Enter/pinch out/click go, Escape backs out
+--   3-finger pinch in                overview: a grid of every column and slot (needs hyprcross.so);
+--                                    swipes/2-finger scroll/arrows move, Enter/spread/click go, Escape backs out
 --
 -- Without the plugin loaded, swipes still switch on release, edges just stop and
 -- the pinch does nothing.
@@ -113,25 +113,22 @@ local function slotTarget(col, row, dir, carry)
     return ws(col, target)
 end
 
--- The overview's cross around (col, row): every column on the main row showing
--- the slot it would open on, and the selected column's slots down through it,
--- one empty slot past the last used one. x/y are grid steps from the selection.
-local function crossCells(col, row)
+-- The overview's grid: every column across, each with its slots down to the last
+-- used one (and the one you're on, even if it's empty). x/y are grid positions.
+local function gridCells(col, row)
     local cells = {}
     for c = 1, COLUMNS do
-        if c ~= col then table.insert(cells, { id = columnTarget(c), x = c - col, y = 0 }) end
-    end
-    local last = row
-    for r = 0, MAX_ROWS - 1 do
-        if occupied(ws(col, r)) then last = math.max(last, math.min(r + 1, MAX_ROWS - 1)) end
-    end
-    for r = 0, last do
-        table.insert(cells, { id = ws(col, r), x = 0, y = r - row })
+        local last = c == col and row or 0
+        for r = 0, MAX_ROWS - 1 do
+            if occupied(ws(c, r)) then last = math.max(last, r) end
+        end
+        for r = 0, last do
+            table.insert(cells, { id = ws(c, r), x = c - 1, y = r })
+        end
     end
     return cells
 end
-M.crossCells = crossCells
-M.lastRow    = lastRow
+M.gridCells = gridCells
 
 local function horizontal(dir, carry)
     local id = columnTarget(current() + dir)
@@ -170,11 +167,11 @@ hl.bind("SUPER + CTRL + SHIFT + down",  function() vertical(1, true) end)
 hl.bind("SUPER + mouse_down", function() horizontal(1) end)
 hl.bind("SUPER + mouse_up",   function() horizontal(-1) end)
 
--- Overview: pinching three fingers shrinks the screen into an XMB cross of all
--- the columns (needs hyprcross.so). While it's up, swipes and arrows move the
--- selection, Enter / pinching out / clicking a thumbnail goes there, Escape
--- goes back.
-local ov = { open = false, pinching = false, col = 1, row = 0 }
+-- Overview: pinching three fingers shrinks the screen into a grid of every
+-- column and slot (needs hyprcross.so). While it's up, 3-finger swipes, 2-finger
+-- scrolling and arrows move the highlight, Enter / spreading the fingers /
+-- clicking a thumbnail goes there, Escape goes back, and nothing else gets input.
+local ov = { open = false, pinching = false }
 M.ov = ov
 
 local function ovLeave()
@@ -198,27 +195,16 @@ local function ovCancel()
     ovLeave()
 end
 
--- Move the selection one column (axis "x") or slot ("y"); dir 1 is right/down.
-local function ovStep(axis, dir)
+local function ovPickSelected()
     local p = plugin()
-    if not p or not ov.open then return end
-    local id
-    if axis == "x" then
-        id = columnTarget(ov.col + dir)
-    else
-        id = slotTarget(ov.col, ov.row, dir)
-    end
-    if not id then return end
-    ov.col, ov.row = cell(id)
-    p.overview_select(crossCells(ov.col, ov.row), id)
+    if p and ov.open then ovPick(p.overview_selected()) end
 end
-M.ovStep = ovStep
 
 local function pinchStart(e)
     local p = plugin()
     if not p or ov.open or ov.pinching then return end
-    ov.col, ov.row = current()
-    ov.pinching = p.overview_begin(crossCells(ov.col, ov.row), ws(ov.col, ov.row), ovPick)
+    local col, row = current()
+    ov.pinching = p.overview_begin(gridCells(col, row), ws(col, row), ovPick)
     if ov.pinching then p.overview_update(e.scale, e.time_ms) end
 end
 
@@ -236,9 +222,7 @@ end
 -- Hyprland names pinches by zoom: fingers coming together (scale < 1) is
 -- "pinchout", spreading them is "pinchin".
 hl.gesture({ fingers = 3, direction = "pinchout", action = { start = pinchStart, update = pinchUpdate, finish = pinchEnd } })
-hl.gesture({ fingers = 3, direction = "pinchin", action = { finish = function()
-    if ov.open then ovPick(ws(ov.col, ov.row)) end
-end } })
+hl.gesture({ fingers = 3, direction = "pinchin", action = { finish = ovPickSelected } })
 
 -- Keys only while the overview is up. If it went away on its own (a keybind
 -- switched workspaces, the screen locked), the first key just drops the submap.
@@ -251,12 +235,14 @@ local function ovKey(fn)
 end
 
 hl.define_submap("cross_overview", function()
-    hl.bind("left",   ovKey(function() ovStep("x", -1) end))
-    hl.bind("right",  ovKey(function() ovStep("x", 1) end))
-    hl.bind("up",     ovKey(function() ovStep("y", -1) end))
-    hl.bind("down",   ovKey(function() ovStep("y", 1) end))
-    hl.bind("Return", ovKey(function() ovPick(ws(ov.col, ov.row)) end))
+    hl.bind("left",   ovKey(function() plugin().overview_move(-1, 0) end))
+    hl.bind("right",  ovKey(function() plugin().overview_move(1, 0) end))
+    hl.bind("up",     ovKey(function() plugin().overview_move(0, -1) end))
+    hl.bind("down",   ovKey(function() plugin().overview_move(0, 1) end))
+    hl.bind("Return", ovKey(ovPickSelected))
     hl.bind("Escape", ovKey(ovCancel))
+    -- every other key goes nowhere while the overview is up
+    hl.bind("catchall", ovKey(function() end))
 end)
 
 -- The plugin drops the overview when something else switches workspaces;
@@ -277,7 +263,8 @@ local function swipeStart(e)
     swipe.tracking = false
 
     local p = plugin()
-    if not p or ov.open or ov.pinching then return end
+    if p and ov.open then return p.overview_drag(e.delta.x, e.delta.y, e.time_ms) end
+    if not p or ov.pinching then return end
     local col, row = current()
     local before, after
     if swipe.axis == "x" then
@@ -290,6 +277,7 @@ local function swipeStart(e)
 end
 
 local function swipeUpdate(e)
+    if ov.open then return plugin().overview_drag(e.delta.x, e.delta.y, e.time_ms) end
     local d = e.delta[swipe.axis]
     swipe.moved = swipe.moved + d
     if swipe.tracking then plugin().swipe_update(d, e.time_ms) end
@@ -298,10 +286,7 @@ end
 -- Hyprland reads this one as "finish" (its error message also says "end", which is ignored).
 local function swipeEnd(e)
     if ov.open then
-        -- one step per swipe, same direction sense as switching
-        if not e.cancelled and math.abs(swipe.moved) > 50 then
-            ovStep(swipe.axis, swipe.moved < 0 and 1 or -1)
-        end
+        plugin().overview_release()
     elseif swipe.tracking then
         plugin().swipe_end(e.cancelled)
     elseif not e.cancelled and math.abs(swipe.moved) > 50 then

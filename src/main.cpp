@@ -334,7 +334,10 @@ APICALL EXPORT PLUGIN_DESCRIPTION_INFO PLUGIN_INIT(HANDLE handle) {
     ok &= HyprlandAPI::addLuaFunction(PHANDLE, "cross", "overview_begin", overview::luaBegin);
     ok &= HyprlandAPI::addLuaFunction(PHANDLE, "cross", "overview_update", overview::luaUpdate);
     ok &= HyprlandAPI::addLuaFunction(PHANDLE, "cross", "overview_end", overview::luaEnd);
-    ok &= HyprlandAPI::addLuaFunction(PHANDLE, "cross", "overview_select", overview::luaSelect);
+    ok &= HyprlandAPI::addLuaFunction(PHANDLE, "cross", "overview_drag", overview::luaDrag);
+    ok &= HyprlandAPI::addLuaFunction(PHANDLE, "cross", "overview_release", overview::luaRelease);
+    ok &= HyprlandAPI::addLuaFunction(PHANDLE, "cross", "overview_move", overview::luaMove);
+    ok &= HyprlandAPI::addLuaFunction(PHANDLE, "cross", "overview_selected", overview::luaSelected);
     ok &= HyprlandAPI::addLuaFunction(PHANDLE, "cross", "overview_close", overview::luaClose);
     ok &= HyprlandAPI::addLuaFunction(PHANDLE, "cross", "overview_active", overview::luaActive);
     if (!ok)

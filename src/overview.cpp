@@ -2,8 +2,13 @@
 // is rendered into its own framebuffer before the monitor renders, and the
 // thumbnails are drawn over the (emptied) desktop with Hyprland's stock pass
 // elements. One animated value, `progress`, takes it from the plain desktop (0)
-// to the cross (1); the anchor thumbnail is the one that grows to fill the
+// to the grid (1); the anchor thumbnail is the one that grows to fill the
 // screen at 0 (where it opened from, or where it is closing to).
+//
+// Selection is a highlight frame of its own: fingers (3-finger swipes, 2-finger
+// scrolling) push it around freely, a magnet makes it cling to thumbnails, and
+// on release it springs onto the nearest one. Thumbnails swell as it nears
+// them, and the view trails behind it.
 //
 // Drawing hooks into render.stage (the last moment, so it covers everything,
 // fullscreen windows included) rather than replacing renderWorkspace like
@@ -28,6 +33,7 @@
 #include <hyprland/src/managers/input/InputManager.hpp>
 #include <hyprland/src/managers/SessionLockManager.hpp>
 #include <hyprland/src/managers/eventLoop/EventLoopManager.hpp>
+#include <hyprland/src/managers/eventLoop/EventLoopTimer.hpp>
 #include <hyprland/src/helpers/time/Time.hpp>
 
 #include "shared.hpp"
@@ -43,8 +49,8 @@ extern "C" {
 #include <unordered_map>
 
 namespace {
-    // Layout, as fractions of the screen: thumbnail size, the selected one's
-    // extra scale, and the gaps between thumbnails.
+    // Layout, as fractions of the screen: thumbnail size, how much the one under
+    // the highlight grows, and the gaps between thumbnails.
     constexpr double THUMB_FRAC     = 0.2;
     constexpr double SELECTED_SCALE = 1.3;
     constexpr double GAP_X          = 0.04;
@@ -63,6 +69,17 @@ namespace {
     constexpr double FLICK_SPEED = 0.004;
     constexpr int    VELOCITY_MS = 80;
 
+    // Moving the highlight: finger travel per thumbnail for 3-finger swipes and
+    // 2-finger scrolling, how far a flick carries it on release (velocity times
+    // this), and how long scrolling must pause to count as letting go.
+    constexpr double SWIPE_DIST     = 150.0;
+    constexpr double SCROLL_DIST    = 120.0;
+    constexpr double FLING_MS       = 120.0;
+    constexpr int    SCROLL_IDLE_MS = 60;
+
+    // How far behind the highlight the view trails (time constant, ms).
+    constexpr double CAMERA_LAG_MS = 70.0;
+
     // renderWorkspace is protected. hyprexpo gets at it with #define protected
     // public, but that can change class layouts (tail padding) and so misread
     // Hyprland's own objects; a derived class can hand out the member pointer instead.
@@ -76,19 +93,25 @@ namespace {
 
     struct SCell {
         WORKSPACEID id = WORKSPACE_INVALID;
-        double      x = 0, y = 0; // grid steps from the selection
+        double      x = 0, y = 0; // grid position
     };
 
     struct SOverview {
         PHLMONITORREF                                             monitor;
         PHLWORKSPACEREF                                           startedOn;
         std::vector<SCell>                                        cells;
-        WORKSPACEID                                               selected = WORKSPACE_INVALID;
-        WORKSPACEID                                               anchor   = WORKSPACE_INVALID;
+        WORKSPACEID                                               target = WORKSPACE_INVALID; // thumbnail the highlight is on or heading to
+        WORKSPACEID                                               anchor = WORKSPACE_INVALID;
         std::unordered_map<WORKSPACEID, SP<Render::IFramebuffer>> fbs;
 
         PHLANIMVAR<float>                                         progress;
-        PHLANIMVAR<Vector2D>                                      offset; // grid position at the screen centre
+        PHLANIMVAR<Vector2D>                                      highlight;  // grid position of the highlight frame
+        Vector2D                                                  camera;     // grid position at the screen centre
+        Time::steady_tp                                           cameraTime; // last camera step
+        Vector2D                                                  raw;        // where the fingers put the highlight, before the magnet
+        bool                                                      dragging = false;
+        std::deque<std::pair<uint32_t, Vector2D>>                 dragRecent;
+        SP<CEventLoopTimer>                                       scrollTimer;
         std::deque<std::pair<uint32_t, double>>                   recent;
         bool                                                      tracking = false;
         bool                                                      closing  = false;
@@ -97,7 +120,7 @@ namespace {
 
         int                                                       pickRef = LUA_NOREF;
 
-        CHyprSignalListener                                       preListener, stageListener, buttonListener, moveListener, workspaceListener, monitorListener;
+        CHyprSignalListener preListener, stageListener, buttonListener, moveListener, axisListener, workspaceListener, monitorListener;
     };
 
     std::optional<SOverview> g_ov;
@@ -112,14 +135,62 @@ namespace {
         return {lerp(a.pos(), b.pos(), t), lerp(a.size(), b.size(), t)};
     }
 
-    // Logical, monitor-local box of a cell.
-    CBox cellBox(const SOverview& o, const PHLMONITOR& mon, const SCell& c) {
+    Vector2D posOf(const SCell& c) {
+        return {c.x, c.y};
+    }
+
+    // 1 with the highlight right on the cell, falling to 0 a cell away.
+    double nearness(const SOverview& o, const SCell& c) {
+        const auto D = o.highlight->value() - posOf(c);
+        return std::clamp(1.0 - std::sqrt(D.x * D.x + D.y * D.y), 0.0, 1.0);
+    }
+
+    // Logical, monitor-local box of something `scale` thumbnails big at grid `pos`.
+    CBox gridBox(const SOverview& o, const PHLMONITOR& mon, const Vector2D& pos, double scale) {
         const Vector2D STEP{mon->m_size.x * (THUMB_FRAC + GAP_X), mon->m_size.y * (THUMB_FRAC + GAP_Y)};
-        Vector2D       size = mon->m_size * THUMB_FRAC;
-        if (c.id == o.selected)
-            size = size * SELECTED_SCALE;
-        const Vector2D CENTRE = mon->m_size / 2.0 + (Vector2D{c.x, c.y} - o.offset->value()) * STEP;
-        return {CENTRE - size / 2.0, size};
+        const Vector2D SIZE   = mon->m_size * THUMB_FRAC * scale;
+        const Vector2D CENTRE = mon->m_size / 2.0 + (pos - o.camera) * STEP;
+        return {CENTRE - SIZE / 2.0, SIZE};
+    }
+
+    CBox cellBox(const SOverview& o, const PHLMONITOR& mon, const SCell& c) {
+        return gridBox(o, mon, posOf(c), 1.0 + (SELECTED_SCALE - 1.0) * nearness(o, c));
+    }
+
+    const SCell* nearestCell(const SOverview& o, const Vector2D& pos) {
+        const SCell* best     = nullptr;
+        double       bestDist = INFINITY;
+        for (auto const& c : o.cells) {
+            const auto   D    = pos - posOf(c);
+            const double DIST = D.x * D.x + D.y * D.y;
+            if (DIST < bestDist) {
+                best     = &c;
+                bestDist = DIST;
+            }
+        }
+        return best;
+    }
+
+    // The highlight clings to grid points: near one it barely moves, halfway
+    // between two it moves fast. Continuous, so it never jumps.
+    Vector2D magnet(const Vector2D& raw) {
+        auto axis = [](double v) {
+            const double N = std::round(v);
+            const double D = v - N;
+            return N + std::copysign(0.5 * std::pow(2.0 * std::abs(D), 1.5), D);
+        };
+        return {axis(raw.x), axis(raw.y)};
+    }
+
+    // Keep the fingers from pushing the highlight far past the grid.
+    Vector2D clampToGrid(const SOverview& o, const Vector2D& pos) {
+        Vector2D lo{INFINITY, INFINITY}, hi{-INFINITY, -INFINITY};
+        for (auto const& c : o.cells) {
+            lo = {std::min(lo.x, c.x), std::min(lo.y, c.y)};
+            hi = {std::max(hi.x, c.x), std::max(hi.y, c.y)};
+        }
+        constexpr double SLACK = 0.35;
+        return {std::clamp(pos.x, lo.x - SLACK, hi.x + SLACK), std::clamp(pos.y, lo.y - SLACK, hi.y + SLACK)};
     }
 
     const SCell* cellFor(const SOverview& o, WORKSPACEID id) {
@@ -134,11 +205,6 @@ namespace {
             return;
         if (const auto MON = g_ov->monitor.lock())
             g_pHyprRenderer->damageMonitor(MON);
-    }
-
-    // The column a workspace id belongs to (cross.lua's ids are 10 * column + slot).
-    WORKSPACEID column(WORKSPACEID id) {
-        return id < 10 ? id : id / 10;
     }
 
     std::optional<std::vector<SCell>> parseCells(lua_State* L, int idx) {
@@ -170,9 +236,9 @@ namespace {
     }
 
     // The overview is done. Workspaces get put back from the next render.pre
-    // (restore()), which is where their animated values can be warped safely:
-    // warping them from an idle callback aborts Hyprland. Only then is the rest
-    // freed, from the event loop, outside the signals whose listeners it drops.
+    // (restore()), so the frame that drops the overlay already shows the real
+    // desktop; the rest is freed later from the event loop, outside the signals
+    // whose listeners it drops.
     void finish() {
         if (!g_ov || g_ov->finished)
             return;
@@ -209,11 +275,74 @@ namespace {
             cross::applyFullscreenAlpha(mon, mon->m_activeWorkspace);
     }
 
+    // Spring the highlight (and with it the view) onto a thumbnail.
+    void snapTo(const SCell& c) {
+        auto& o     = *g_ov;
+        o.target    = c.id;
+        o.raw       = posOf(c);
+        o.dragging  = false;
+        *o.highlight = posOf(c);
+        o.dragRecent.clear();
+        damage();
+    }
+
+    // Fingers moved the highlight by `d` grid steps.
+    void drag(const Vector2D& d, uint32_t time) {
+        auto& o = *g_ov;
+        if (!o.dragging) {
+            o.dragging = true;
+            o.raw      = o.highlight->value();
+        }
+        o.raw = clampToGrid(o, o.raw + d);
+        o.dragRecent.emplace_back(time, d);
+        while (o.dragRecent.size() > 2 && time - o.dragRecent.front().first > VELOCITY_MS)
+            o.dragRecent.pop_front();
+        o.highlight->setValueAndWarp(magnet(o.raw));
+        if (const auto C = nearestCell(o, o.raw))
+            o.target = C->id;
+        damage();
+    }
+
+    // Fingers lifted: settle on the nearest thumbnail, carried on by a flick.
+    void release() {
+        auto& o = *g_ov;
+        if (!o.dragging)
+            return;
+        Vector2D vel;
+        if (o.dragRecent.size() >= 2) {
+            Vector2D sum;
+            for (auto const& [_, d] : o.dragRecent)
+                sum = sum + d;
+            vel = sum / std::max<double>(o.dragRecent.back().first - o.dragRecent.front().first, 8.0);
+        }
+        if (const auto C = nearestCell(o, o.raw + vel * FLING_MS))
+            snapTo(*C);
+    }
+
+    // Keys and mouse wheels: to the neighbouring thumbnail, if there is one.
+    void moveBy(int dx, int dy) {
+        auto&      o   = *g_ov;
+        const auto CUR = std::ranges::find_if(o.cells, [&](const SCell& c) { return c.id == o.target; });
+        if (CUR == o.cells.end())
+            return;
+        const SCell* best = nullptr;
+        for (auto const& c : o.cells) {
+            if (dx && c.x == CUR->x + dx && (!best || std::abs(c.y - CUR->y) < std::abs(best->y - CUR->y)))
+                best = &c;
+            if (dy && c.x == CUR->x && c.y == CUR->y + dy)
+                best = &c;
+        }
+        if (best)
+            snapTo(*best);
+    }
+
     // Zoom back into `id` and go away.
     void startClosing(WORKSPACEID id) {
         auto& o   = *g_ov;
         o.closing = true;
         o.anchor  = id;
+        if (const auto C = cellFor(o, id))
+            *o.highlight = posOf(*C);
         if (o.progress->value() <= 0.001F) {
             finish();
             return;
@@ -306,6 +435,15 @@ namespace {
             }
         }
 
+        // the view trails the highlight
+        const auto   NOW  = Time::steadyNow();
+        const double DT   = std::chrono::duration<double, std::milli>(NOW - o.cameraTime).count();
+        o.cameraTime      = NOW;
+        const auto   GAP  = o.highlight->value() - o.camera;
+        o.camera          = o.camera + GAP * (1.0 - std::exp(-std::clamp(DT, 0.0, 100.0) / CAMERA_LAG_MS));
+        if (std::abs(GAP.x) + std::abs(GAP.y) > 0.001)
+            damage();
+
         renderThumbs(mon);
 
         mon->m_forceFullFrames = std::max(mon->m_forceFullFrames, 1);
@@ -340,11 +478,10 @@ namespace {
             if (FB == o.fbs.end() || !FB->second->isAllocated())
                 return;
 
-            const bool  SELECTED = c.id == o.selected;
-            const float RESTA    = SELECTED ? 1.F : UNSELECTED_ALPHA;
-            CBox        box      = cellBox(o, MON, c);
-            float       a        = RESTA * P;
-            double      round    = *PROUNDING;
+            const float RESTA = UNSELECTED_ALPHA + (1.F - UNSELECTED_ALPHA) * nearness(o, c);
+            CBox        box   = cellBox(o, MON, c);
+            float       a     = RESTA * P;
+            double      round = *PROUNDING;
             if (c.id == o.anchor) {
                 box   = lerp(FULL, box, P);
                 a     = 1.F + (RESTA - 1.F) * P;
@@ -358,30 +495,29 @@ namespace {
             tex.damage = DAMAGE;
             tex.round  = std::round(round * SCALE);
             g_pHyprRenderer->m_renderPass.add(makeUnique<CTexPassElement>(std::move(tex)));
-
-            if (SELECTED) {
-                CBorderPassElement::SBorderData border;
-                border.box = toPixels(box);
-                if (const auto GRAD = dynamic_cast<Config::CGradientValueData*>(PBORDER.ptr()))
-                    border.grad1 = *GRAD;
-                else
-                    border.grad1 = Config::CGradientValueData{CHyprColor{1, 1, 1, 1}};
-                border.a          = P;
-                border.round      = std::round(round * SCALE);
-                border.borderSize = std::round(BORDER_PX * SCALE);
-                g_pHyprRenderer->m_renderPass.add(makeUnique<CBorderPassElement>(border));
-            }
         };
 
-        // the selection over its neighbours, the anchor over everything while it zooms
+        // nearest the highlight on top, the anchor over everything while it zooms
+        std::vector<const SCell*> order;
         for (auto const& c : o.cells)
-            if (c.id != o.selected && c.id != o.anchor)
-                drawCell(c);
-        for (auto const& c : o.cells)
-            if (c.id == o.selected && c.id != o.anchor)
-                drawCell(c);
+            if (c.id != o.anchor)
+                order.push_back(&c);
+        std::ranges::sort(order, {}, [&](const SCell* c) { return nearness(o, *c); });
+        for (auto const* c : order)
+            drawCell(*c);
         if (const auto ANCHOR = cellFor(o, o.anchor))
             drawCell(*ANCHOR);
+
+        CBorderPassElement::SBorderData border;
+        border.box = toPixels(gridBox(o, MON, o.highlight->value(), SELECTED_SCALE));
+        if (const auto GRAD = dynamic_cast<Config::CGradientValueData*>(PBORDER.ptr()))
+            border.grad1 = *GRAD;
+        else
+            border.grad1 = Config::CGradientValueData{CHyprColor{1, 1, 1, 1}};
+        border.a          = P;
+        border.round      = std::round(*PROUNDING * SCALE);
+        border.borderSize = std::round(BORDER_PX * SCALE);
+        g_pHyprRenderer->m_renderPass.add(makeUnique<CBorderPassElement>(border));
     }
 
     void callPick(WORKSPACEID id) {
@@ -427,6 +563,24 @@ namespace {
             if (g_ov && !g_ov->closing)
                 info.cancelled = true;
         });
+        // 2-finger scrolling drags the highlight; it settles once scrolling pauses.
+        // A mouse wheel steps it instead. Nothing scrolls underneath.
+        o.axisListener = ev.input.mouse.axis.listen([](const IPointer::SAxisEvent& e, Event::SCallbackInfo& info) {
+            if (!g_ov || g_ov->closing)
+                return;
+            info.cancelled         = true;
+            const bool HORIZONTAL = e.axis == WL_POINTER_AXIS_HORIZONTAL_SCROLL;
+            if (e.source == WL_POINTER_AXIS_SOURCE_WHEEL) {
+                if (e.deltaDiscrete)
+                    moveBy(HORIZONTAL ? (e.deltaDiscrete > 0 ? 1 : -1) : 0, HORIZONTAL ? 0 : (e.deltaDiscrete > 0 ? 1 : -1));
+                return;
+            }
+            if (e.delta == 0)
+                return release();
+            const double D = e.delta / SCROLL_DIST;
+            drag(HORIZONTAL ? Vector2D{D, 0.0} : Vector2D{0.0, D}, e.timeMs);
+            g_ov->scrollTimer->updateTimeout(std::chrono::milliseconds(SCROLL_IDLE_MS));
+        });
         o.workspaceListener = ev.workspace.active.listen([](PHLWORKSPACE ws) {
             // something other than a pick switched workspaces under us
             if (g_ov && !g_ov->closing && ws && ws->m_monitor == g_ov->monitor && ws != g_ov->startedOn)
@@ -461,6 +615,11 @@ namespace cross::overview {
                 *MON->m_activeWorkspace->m_alpha = 1.F;
         }
 
+        if (o.scrollTimer) {
+            o.scrollTimer->cancel();
+            g_pEventLoopManager->removeTimer(o.scrollTimer);
+        }
+
         // glBackend() is uniquely owned: lock()ing it terminates Hyprland
         if (const auto GL = g_pHyprRenderer->glBackend())
             GL->makeEGLCurrent();
@@ -492,7 +651,7 @@ namespace cross::overview {
         o.monitor   = MON;
         o.startedOn = MON->m_activeWorkspace;
         o.cells     = *CELLS;
-        o.selected  = SELECTED;
+        o.target    = SELECTED;
         o.anchor    = MON->m_activeWorkspace->m_id;
 
         if (!lua_isnoneornil(L, 3)) {
@@ -502,9 +661,19 @@ namespace cross::overview {
 
         const auto CONFIG = Config::animationTree()->getAnimationPropertyConfig("workspaces");
         Animation::mgr()->createAnimation(0.F, o.progress, CONFIG, AVARDAMAGE_NONE);
-        Animation::mgr()->createAnimation(Vector2D{}, o.offset, CONFIG, AVARDAMAGE_NONE);
+        const auto START  = cellFor(o, SELECTED) ? posOf(*cellFor(o, SELECTED)) : Vector2D{};
+        Animation::mgr()->createAnimation(START, o.highlight, CONFIG, AVARDAMAGE_NONE);
         o.progress->setUpdateCallback([](auto) { damage(); });
-        o.offset->setUpdateCallback([](auto) { damage(); });
+        o.highlight->setUpdateCallback([](auto) { damage(); });
+        o.camera     = START;
+        o.raw        = START;
+        o.cameraTime = Time::steadyNow();
+
+        o.scrollTimer = makeShared<CEventLoopTimer>(std::nullopt, [](SP<CEventLoopTimer>, void*) {
+            if (g_ov && !g_ov->closing)
+                release();
+        }, nullptr);
+        g_pEventLoopManager->addTimer(o.scrollTimer);
 
         // the bar fades out on its own animation; warping layer alphas from a
         // plugin aborts Hyprland
@@ -572,41 +741,36 @@ namespace cross::overview {
         return 1;
     }
 
-    int luaSelect(lua_State* L) {
-        const auto CELLS = parseCells(L, 1);
-        if (!CELLS)
-            return luaL_error(L, "cross.overview_select: cells must be a list of {id, x, y}");
-        const auto SELECTED = luaL_checkinteger(L, 2);
+    int luaDrag(lua_State* L) {
+        const double   DX   = luaL_checknumber(L, 1);
+        const double   DY   = luaL_checknumber(L, 2);
+        const uint32_t TIME = sc<uint32_t>(luaL_optinteger(L, 3, 0));
         if (!g_ov || g_ov->closing)
             return 0;
-
-        auto& o = *g_ov;
-
-        // Start the cross where the old selection was, then slide it to the new one.
-        Vector2D from;
-        bool     found = false;
-        for (auto const& c : *CELLS) {
-            if (c.id == o.selected) {
-                from  = {c.x, c.y};
-                found = true;
-                break;
-            }
-        }
-        if (!found) {
-            for (auto const& c : *CELLS) {
-                if (column(c.id) == column(o.selected) && c.y == 0) {
-                    from = {c.x, 0.0};
-                    break;
-                }
-            }
-        }
-
-        o.cells    = *CELLS;
-        o.selected = SELECTED;
-        o.offset->setValueAndWarp(from + o.offset->value());
-        *o.offset = Vector2D{};
-        damage();
+        // the grid follows the fingers, so the highlight goes the other way
+        drag(Vector2D{-DX, -DY} / SWIPE_DIST, TIME);
         return 0;
+    }
+
+    int luaRelease(lua_State* L) {
+        if (g_ov && !g_ov->closing)
+            release();
+        return 0;
+    }
+
+    int luaMove(lua_State* L) {
+        const auto DX = luaL_checkinteger(L, 1);
+        const auto DY = luaL_checkinteger(L, 2);
+        if (g_ov && !g_ov->closing)
+            moveBy(sc<int>(DX), sc<int>(DY));
+        return 0;
+    }
+
+    int luaSelected(lua_State* L) {
+        if (!g_ov)
+            return 0;
+        lua_pushinteger(L, g_ov->target);
+        return 1;
     }
 
     int luaClose(lua_State* L) {
