@@ -61,6 +61,7 @@ namespace {
     // How much the wallpaper darkens, and how dim the unselected thumbnails are.
     constexpr float BACKDROP_DIM     = 0.5F;
     constexpr float UNSELECTED_ALPHA = 0.75F;
+    constexpr float EMPTY_ALPHA      = 0.08F; // tile for a slot with no workspace yet
     constexpr int   BORDER_PX        = 3;
 
     // Pinch: how far the fingers close (in libinput scale) for the full zoom, and
@@ -73,8 +74,15 @@ namespace {
 
     // Moving the highlight: finger travel per step, the same for 3-finger swipes
     // and 2-finger scrolling (both arrive as raw touchpad movement; scroll_factor
-    // isn't applied yet), and how long scrolling must pause to count as letting go.
+    // isn't applied yet). Vertical steps take less: the pad is much shorter than
+    // it is wide. And how long scrolling must pause to count as letting go.
     constexpr double STEP_DIST      = 110.0;
+    constexpr double STEP_DIST_Y    = 75.0;
+
+    // Like key repeat: within one drag, the second step takes this many steps'
+    // worth of travel, so a small swipe gives exactly one step and only a long
+    // one keeps going.
+    constexpr double REPEAT_DELAY = 1.8;
     constexpr int    SCROLL_IDLE_MS = 60;
 
     // A drag steps along one axis only, picked by whichever way the fingers go
@@ -118,6 +126,7 @@ namespace {
         Time::steady_tp                                           cameraTime; // last camera step
         bool                                                      dragging = false;
         Vector2D                                                  travel; // finger travel not yet turned into steps
+        int                                                       dragSteps = 0;
         enum : uint8_t { AXIS_NONE, AXIS_X, AXIS_Y }              dragAxis = AXIS_NONE;
         SP<CEventLoopTimer>                                       scrollTimer;
         std::deque<std::pair<uint32_t, double>>                   recent;
@@ -280,8 +289,9 @@ namespace {
         auto& o = *g_ov;
         if (!o.dragging) {
             o.dragging = true;
-            o.dragAxis = SOverview::AXIS_NONE;
-            o.travel   = {};
+            o.dragAxis  = SOverview::AXIS_NONE;
+            o.travel    = {};
+            o.dragSteps = 0;
         }
         o.travel = o.travel + d;
 
@@ -292,13 +302,17 @@ namespace {
         }
 
         double& t = o.dragAxis == SOverview::AXIS_X ? o.travel.x : o.travel.y;
-        while (std::abs(t) >= 1.0) {
+        while (true) {
+            const double NEED = o.dragSteps == 1 ? REPEAT_DELAY : 1.0;
+            if (std::abs(t) < NEED)
+                break;
             const int DIR = t > 0 ? 1 : -1;
             if (!(o.dragAxis == SOverview::AXIS_X ? moveBy(DIR, 0) : moveBy(0, DIR))) {
                 t = 0; // at the edge: don't bank travel, so turning back responds at once
                 break;
             }
-            t -= DIR;
+            t -= DIR * NEED;
+            o.dragSteps++;
         }
     }
 
@@ -445,11 +459,18 @@ namespace {
         g_pHyprRenderer->m_renderPass.add(makeUnique<CRectPassElement>(backdrop));
 
         auto drawCell = [&](const SCell& c) {
-            const auto FB = o.fbs.find(c.id);
-            if (FB == o.fbs.end() || !FB->second->isAllocated())
-                return;
-
             const float RESTA = UNSELECTED_ALPHA + (1.F - UNSELECTED_ALPHA) * nearness(o, c);
+            const auto  FB    = o.fbs.find(c.id);
+            if (FB == o.fbs.end() || !FB->second->isAllocated()) {
+                // a slot with no workspace yet: a faint tile, so it's clear it's there
+                CRectPassElement::SRectData empty;
+                empty.box   = toPixels(cellBox(o, MON, c));
+                empty.color = CHyprColor{1, 1, 1, EMPTY_ALPHA * RESTA * P};
+                empty.round = std::round(*PROUNDING * SCALE);
+                g_pHyprRenderer->m_renderPass.add(makeUnique<CRectPassElement>(empty));
+                return;
+            }
+
             CBox        box   = cellBox(o, MON, c);
             float       a     = RESTA * P;
             double      round = *PROUNDING;
@@ -549,8 +570,7 @@ namespace {
             }
             if (e.delta == 0)
                 return release();
-            const double D = e.delta / STEP_DIST;
-            drag(HORIZONTAL ? Vector2D{D, 0.0} : Vector2D{0.0, D});
+            drag(HORIZONTAL ? Vector2D{e.delta / STEP_DIST, 0.0} : Vector2D{0.0, e.delta / STEP_DIST_Y});
             g_ov->scrollTimer->updateTimeout(std::chrono::milliseconds(SCROLL_IDLE_MS));
         });
         o.workspaceListener = ev.workspace.active.listen([](PHLWORKSPACE ws) {
@@ -718,7 +738,7 @@ namespace cross::overview {
         if (!g_ov || g_ov->closing)
             return 0;
         // the grid follows the fingers, so the highlight goes the other way
-        drag(Vector2D{-DX, -DY} / STEP_DIST);
+        drag(Vector2D{-DX / STEP_DIST, -DY / STEP_DIST_Y});
         return 0;
     }
 

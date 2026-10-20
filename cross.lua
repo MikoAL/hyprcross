@@ -113,14 +113,15 @@ local function slotTarget(col, row, dir, carry)
     return ws(col, target)
 end
 
--- The overview's grid: every column across, each with its slots down to the last
--- used one (and the one you're on, even if it's empty). x/y are grid positions.
+-- The overview's grid: every column across, each with its slots down to one
+-- empty slot past the last used one (and the one you're on, even if it's further
+-- down), so there's always somewhere to go down to. x/y are grid positions.
 local function gridCells(col, row)
     local cells = {}
     for c = 1, COLUMNS do
         local last = c == col and row or 0
         for r = 0, MAX_ROWS - 1 do
-            if occupied(ws(c, r)) then last = math.max(last, r) end
+            if occupied(ws(c, r)) then last = math.max(last, math.min(r + 1, MAX_ROWS - 1)) end
         end
         for r = 0, last do
             table.insert(cells, { id = ws(c, r), x = c - 1, y = r })
