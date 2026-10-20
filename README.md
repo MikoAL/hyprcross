@@ -56,6 +56,8 @@ falls back to switching on release with no rubber band, and the pinch does nothi
   stretches), `FLICK_SPEED` / `COMMIT_RATIO` (when a swipe commits on release).
 - `src/overview.cpp`: `THUMB_FRAC` / `SELECTED_SCALE` / `GAP_X` / `GAP_Y` (cross
   layout), `BACKDROP_DIM` / `UNSELECTED_ALPHA` / `BORDER_PX` (look),
+  `THUMB_RES` / `BACKGROUND_EVERY` (thumbnail resolution and how often the
+  unhighlighted ones redraw: the frame-rate knobs),
   `PINCH_RANGE` / `OPEN_RATIO` / `FLICK_SPEED` (when a pinch opens it),
   `STEP_DIST` / `STEP_DIST_Y` (finger travel per sideways / up-down step, swipes and scrolling alike), `REPEAT_DELAY` (extra travel before a drag's second step), `CAMERA_LAG_MS` (how far the view trails).
 - `cross.lua`: `BUMP_PX` / `BUMP_MS` (the keyboard edge bump).

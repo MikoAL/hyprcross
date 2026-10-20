@@ -62,6 +62,15 @@ namespace {
     constexpr float BACKDROP_DIM     = 0.5F;
     constexpr float UNSELECTED_ALPHA = 0.75F;
     constexpr float EMPTY_ALPHA      = 0.08F; // tile for a slot with no workspace yet
+
+    // Thumbnails are rendered at this fraction of the screen's resolution
+    // (enough for the biggest one, THUMB_FRAC * SELECTED_SCALE); only the one
+    // zooming to or from full screen gets full resolution, and only mid-zoom.
+    constexpr double THUMB_RES = 0.35;
+
+    // The highlighted and zooming thumbnails redraw every frame; the rest take
+    // turns, each redrawing once every this many frames.
+    constexpr int BACKGROUND_EVERY = 3;
     constexpr int   BORDER_PX        = 3;
 
     // Pinch: how far the fingers close (in libinput scale) for the full zoom, and
@@ -125,6 +134,7 @@ namespace {
         Vector2D                                                  camera;     // grid position at the screen centre
         Time::steady_tp                                           cameraTime; // last camera step
         bool                                                      dragging = false;
+        uint64_t                                                  frame    = 0;
         Vector2D                                                  travel; // finger travel not yet turned into steps
         int                                                       dragSteps = 0;
         enum : uint8_t { AXIS_NONE, AXIS_X, AXIS_Y }              dragAxis = AXIS_NONE;
@@ -348,7 +358,9 @@ namespace {
         g_pHyprRenderer->m_bBlockSurfaceFeedback = true;
 
         const CBox SCREEN{{}, mon->m_size};
-        for (auto const& c : o.cells) {
+        o.frame++;
+        for (size_t i = 0; i < o.cells.size(); ++i) {
+            auto const& c = o.cells[i];
             const auto WS = cross::find(c.id);
             if (!WS) {
                 o.fbs.erase(c.id);
@@ -357,13 +369,20 @@ namespace {
             if (c.id != o.anchor && !cellBox(o, mon, c).intersection(SCREEN).size().x)
                 continue;
 
-            auto& fb = o.fbs[c.id];
+            auto&      fb       = o.fbs[c.id];
+            const bool ZOOMING  = o.progress->value() < 0.999F;
+            const bool PRIORITY = c.id == o.target || (c.id == o.anchor && ZOOMING);
+            if (fb && fb->isAllocated() && !PRIORITY && (o.frame + i) % BACKGROUND_EVERY)
+                continue;
             if (!fb)
                 fb = g_pHyprRenderer->createFB("hyprcross overview");
+            const bool     FULL_RES = c.id == o.anchor && o.progress->value() < 0.999F;
+            const Vector2D SIZE     = FULL_RES ? mon->m_pixelSize : (mon->m_pixelSize * THUMB_RES).round();
+
             // set up like Hyprland's own window snapshots (makeSnapshotFB); shaders
             // read the framebuffer's image description
-            if (fb->m_size != mon->m_pixelSize)
-                fb->alloc(mon->m_pixelSize.x, mon->m_pixelSize.y, DRM_FORMAT_ABGR8888);
+            if (fb->m_size != SIZE)
+                fb->alloc(SIZE.x, SIZE.y, DRM_FORMAT_ABGR8888);
             fb->setImageDescription(mon->workBufferImageDescription());
 
             CRegion fakeDamage{CBox{{}, mon->m_transformedSize}};
@@ -378,7 +397,7 @@ namespace {
             WS->m_visible          = true;
             WS->m_alpha->setValueAndWarp(1.F);
 
-            renderWorkspace(mon, WS, NOW, CBox{{}, mon->m_pixelSize});
+            renderWorkspace(mon, WS, NOW, CBox{{}, SIZE});
             g_pHyprRenderer->endRender();
 
             WS->m_alpha->setValueAndWarp(0.F);
