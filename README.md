@@ -8,10 +8,11 @@ that both want the whole screen can live in the same column. Workspace id is
 
 - `cross.lua`: the grid, keybinds, slot memory and gestures. Symlinked to
   `~/.config/hypr/cross.lua` and loaded with `require("cross")` from `hyprland.lua`.
-- `src/main.cpp`: the `hyprcross.so` plugin. It lets 3-finger swipes drag the
+- `src/`: the `hyprcross.so` plugin. `main.cpp` lets 3-finger swipes drag the
   screen with your fingers between any two workspaces, rubber-bands past an edge,
-  and does the little bump when a keybind hits an edge. It only moves pixels; which
-  workspace is next is decided in `cross.lua`.
+  and does the little bump when a keybind hits an edge. `overview.cpp` draws the
+  pinch overview: live thumbnails of every column laid out as an XMB cross. It
+  only moves pixels; which workspace is where is decided in `cross.lua`.
 
 ## Keys
 
@@ -23,6 +24,16 @@ that both want the whole screen can live in the same column. Workspace id is
 | Super + 1-0 / Super + Shift + 1-0 | top of a column / send the window there |
 | Super + scroll | prev/next column |
 | 3-finger swipe | drag between columns and slots |
+| 3-finger pinch in | overview: the screen shrinks into a cross of all columns |
+
+While the overview is up:
+
+| Input | Does |
+|---|---|
+| 3-finger swipe / arrow keys | move the selection a column or slot |
+| Enter / 3-finger pinch out | go to the selection |
+| Click a thumbnail | go there |
+| Escape | back to where you were |
 
 ## Build
 
@@ -33,11 +44,17 @@ make reload    # rebuild, install and swap it into the running Hyprland
 
 The plugin only loads into the exact Hyprland it was built against. After a
 Hyprland update, run `make reload`. Until you do, `cross.lua`
-falls back to switching on release with no rubber band.
+falls back to switching on release with no rubber band, and the pinch does nothing.
 
 ## Tuning
 
 - `src/main.cpp`: `RUBBER_LIMIT` / `RUBBER_COEFF` (how far and how stiffly an edge
   stretches), `FLICK_SPEED` / `COMMIT_RATIO` (when a swipe commits on release).
+- `src/overview.cpp`: `THUMB_FRAC` / `SELECTED_SCALE` / `GAP_X` / `GAP_Y` (cross
+  layout), `BACKDROP_DIM` / `UNSELECTED_ALPHA` / `BORDER_PX` (look),
+  `PINCH_RANGE` / `OPEN_RATIO` / `FLICK_SPEED` (when a pinch opens it).
 - `cross.lua`: `BUMP_PX` / `BUMP_MS` (the keyboard edge bump).
-- The settle animation is the `workspaces` animation in `hyprland.lua` (the `wsSnap` spring).
+- The settle animation is the `workspaces` animation in `hyprland.lua` (the `wsSnap` spring);
+  the overview's zoom and slide use it too.
+
+`make test` checks the cross layout and overview stepping in `cross.lua` against a stubbed `hl`.

@@ -56,4 +56,34 @@ do
     check("nothing past 39", byId[40] == nil or byId[40].x ~= 0)
 end
 
+-- stepping the overview selection
+do
+    stub.reset(); stub.occupy(30, 31, 40)
+    local selected
+    stub.hl.plugin.cross = {
+        swipe_begin     = function() end,
+        overview_active = function() return true end,
+        overview_select = function(cells, id) selected = { cells = cells, id = id } end,
+    }
+    cross.ov.open, cross.ov.col, cross.ov.row = true, 3, 1
+    cross.ovStep("x", 1)
+    check("right selects column 4", selected and selected.id == 40 and cross.ov.col == 4 and cross.ov.row == 0)
+    local byId = cellsById(selected.cells)
+    check("cross re-centred on 4", byId[40].x == 0 and byId[40].y == 0 and byId[30].x == -1)
+
+    selected = nil
+    cross.ov.col, cross.ov.row = 10, 0
+    cross.ovStep("x", 1)
+    check("no column past 10", selected == nil and cross.ov.col == 10)
+
+    cross.ov.col, cross.ov.row = 3, 1
+    cross.ovStep("y", 1)
+    check("down to the empty slot after the last", selected and selected.id == 32)
+    selected = nil
+    cross.ov.row = 2
+    cross.ovStep("y", 1)
+    check("not past the empty slot", selected == nil and cross.ov.row == 2)
+    cross.ov.open = false
+end
+
 print("ok")

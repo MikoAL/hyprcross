@@ -14,8 +14,11 @@
 --   Super + scroll                   prev/next column
 --   3-finger swipe                   drags the screen with your fingers (needs hyprcross.so);
 --                                    pushing past an edge rubber-bands
+--   3-finger pinch in                overview: an XMB cross of all columns (needs hyprcross.so);
+--                                    swipes/arrows move, Enter/pinch out/click go, Escape backs out
 --
--- Without the plugin loaded, swipes still switch on release and edges just stop.
+-- Without the plugin loaded, swipes still switch on release, edges just stop and
+-- the pinch does nothing.
 
 local M = {}
 
@@ -167,6 +170,100 @@ hl.bind("SUPER + CTRL + SHIFT + down",  function() vertical(1, true) end)
 hl.bind("SUPER + mouse_down", function() horizontal(1) end)
 hl.bind("SUPER + mouse_up",   function() horizontal(-1) end)
 
+-- Overview: pinching three fingers shrinks the screen into an XMB cross of all
+-- the columns (needs hyprcross.so). While it's up, swipes and arrows move the
+-- selection, Enter / pinching out / clicking a thumbnail goes there, Escape
+-- goes back.
+local ov = { open = false, pinching = false, col = 1, row = 0 }
+M.ov = ov
+
+local function ovLeave()
+    ov.open, ov.pinching = false, false
+    hl.dispatch(hl.dsp.submap("reset"))
+end
+
+local function ovPick(id)
+    local p = plugin()
+    if not p or not (ov.open or ov.pinching) then return end
+    -- before go(): the switch would otherwise look like someone else's and drop the overview
+    p.overview_close(id)
+    ovLeave()
+    local col, row = cell(id)
+    go(col, row)
+end
+
+local function ovCancel()
+    local p = plugin()
+    if p then p.overview_close() end
+    ovLeave()
+end
+
+-- Move the selection one column (axis "x") or slot ("y"); dir 1 is right/down.
+local function ovStep(axis, dir)
+    local p = plugin()
+    if not p or not ov.open then return end
+    local id
+    if axis == "x" then
+        id = columnTarget(ov.col + dir)
+    else
+        id = slotTarget(ov.col, ov.row, dir)
+    end
+    if not id then return end
+    ov.col, ov.row = cell(id)
+    p.overview_select(crossCells(ov.col, ov.row), id)
+end
+M.ovStep = ovStep
+
+local function pinchStart(e)
+    local p = plugin()
+    if not p or ov.open or ov.pinching then return end
+    ov.col, ov.row = current()
+    ov.pinching = p.overview_begin(crossCells(ov.col, ov.row), ws(ov.col, ov.row), ovPick)
+    if ov.pinching then p.overview_update(e.scale, e.time_ms) end
+end
+
+local function pinchUpdate(e)
+    if ov.pinching then plugin().overview_update(e.scale, e.time_ms) end
+end
+
+local function pinchEnd(e)
+    if not ov.pinching then return end
+    ov.pinching = false
+    ov.open = plugin().overview_end(e.cancelled)
+    if ov.open then hl.dispatch(hl.dsp.submap("cross_overview")) end
+end
+
+hl.gesture({ fingers = 3, direction = "pinchin", action = { start = pinchStart, update = pinchUpdate, finish = pinchEnd } })
+hl.gesture({ fingers = 3, direction = "pinchout", action = { finish = function()
+    if ov.open then ovPick(ws(ov.col, ov.row)) end
+end } })
+
+-- Keys only while the overview is up. If it went away on its own (a keybind
+-- switched workspaces, the screen locked), the first key just drops the submap.
+local function ovKey(fn)
+    return function()
+        local p = plugin()
+        if not ov.open or not p or not p.overview_active() then return ovLeave() end
+        fn()
+    end
+end
+
+hl.define_submap("cross_overview", function()
+    hl.bind("left",   ovKey(function() ovStep("x", -1) end))
+    hl.bind("right",  ovKey(function() ovStep("x", 1) end))
+    hl.bind("up",     ovKey(function() ovStep("y", -1) end))
+    hl.bind("down",   ovKey(function() ovStep("y", 1) end))
+    hl.bind("Return", ovKey(function() ovPick(ws(ov.col, ov.row)) end))
+    hl.bind("Escape", ovKey(ovCancel))
+end)
+
+-- The plugin drops the overview when something else switches workspaces;
+-- follow it so the arrows go back to normal.
+hl.on("workspace.active", function()
+    local p = plugin()
+    if ov.open and p and not p.overview_active() then ovLeave() end
+end)
+
 -- Swipes. The screen follows the fingers, so moving them left/up reveals the
 -- column to the right / the slot below ("after"); right/down reveals "before".
 local swipe = { axis = nil, moved = 0, tracking = false }
@@ -178,7 +275,7 @@ local function swipeStart(e)
     swipe.tracking = false
 
     local p = plugin()
-    if not p then return end
+    if not p or ov.open or ov.pinching then return end
     local col, row = current()
     local before, after
     if swipe.axis == "x" then
@@ -198,7 +295,12 @@ end
 
 -- Hyprland reads this one as "finish" (its error message also says "end", which is ignored).
 local function swipeEnd(e)
-    if swipe.tracking then
+    if ov.open then
+        -- one step per swipe, same direction sense as switching
+        if not e.cancelled and math.abs(swipe.moved) > 50 then
+            ovStep(swipe.axis, swipe.moved < 0 and 1 or -1)
+        end
+    elseif swipe.tracking then
         plugin().swipe_end(e.cancelled)
     elseif not e.cancelled and math.abs(swipe.moved) > 50 then
         -- no plugin: switch once the fingers lift
