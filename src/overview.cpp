@@ -5,15 +5,12 @@
 // to the cross (1); the anchor thumbnail is the one that grows to fill the
 // screen at 0 (where it opened from, or where it is closing to).
 //
-// Drawing hooks into render.stage rather than replacing renderWorkspace like
+// Drawing hooks into render.stage (the last moment, so it covers everything,
+// fullscreen windows included) rather than replacing renderWorkspace like
 // hyprexpo does, so both plugins can be loaded at once.
 
-// renderWorkspace is protected; this is how hyprexpo reaches it too.
-#define protected public
-#include <hyprland/src/render/Renderer.hpp>
-#undef protected
-
 #include <hyprland/src/plugins/PluginAPI.hpp>
+#include <hyprland/src/render/Renderer.hpp>
 #include <hyprland/src/Compositor.hpp>
 #include <hyprland/src/desktop/state/FocusState.hpp>
 #include <hyprland/src/desktop/Workspace.hpp>
@@ -42,6 +39,7 @@ extern "C" {
 
 #include <deque>
 #include <optional>
+
 #include <unordered_map>
 
 namespace {
@@ -65,6 +63,17 @@ namespace {
     constexpr double FLICK_SPEED = 0.004;
     constexpr int    VELOCITY_MS = 80;
 
+    // renderWorkspace is protected. hyprexpo gets at it with #define protected
+    // public, but that can change class layouts (tail padding) and so misread
+    // Hyprland's own objects; a derived class can hand out the member pointer instead.
+    struct SRendererAccess : Render::IHyprRenderer {
+        static constexpr auto RENDER_WORKSPACE = &SRendererAccess::renderWorkspace;
+    };
+
+    void renderWorkspace(const PHLMONITOR& mon, const PHLWORKSPACE& ws, const Time::steady_tp& now, const CBox& box) {
+        (g_pHyprRenderer.get()->*SRendererAccess::RENDER_WORKSPACE)(mon, ws, now, box);
+    }
+
     struct SCell {
         WORKSPACEID id = WORKSPACE_INVALID;
         double      x = 0, y = 0; // grid steps from the selection
@@ -83,7 +92,8 @@ namespace {
         std::deque<std::pair<uint32_t, double>>                   recent;
         bool                                                      tracking = false;
         bool                                                      closing  = false;
-        float                                                     topAlpha = 1.F; // what the bar goes back to
+        bool                                                      finished = false; // restore the desktop on the next frame, then go
+        bool                                                      restored = false;
 
         int                                                       pickRef = LUA_NOREF;
 
@@ -159,9 +169,19 @@ namespace {
         return cells;
     }
 
+    // The overview is done. Workspaces get put back from the next render.pre
+    // (restore()), which is where their animated values can be warped safely:
+    // warping them from an idle callback aborts Hyprland. Only then is the rest
+    // freed, from the event loop, outside the signals whose listeners it drops.
+    void finish() {
+        if (!g_ov || g_ov->finished)
+            return;
+        g_ov->closing  = true;
+        g_ov->finished = true;
+        damage();
+    }
+
     void queueTeardown() {
-        // Not from inside the animation callback that asks for it: that would
-        // destroy the animated variable mid-callback.
         if (g_teardownQueued)
             return;
         g_teardownQueued = true;
@@ -171,17 +191,35 @@ namespace {
         });
     }
 
+    // Workspaces back to normal: the active one shown, the rest hidden.
+    void restore(const PHLMONITOR& mon) {
+        for (auto const& c : g_ov->cells) {
+            const auto WS = cross::find(c.id);
+            if (!WS)
+                continue;
+            if (WS == mon->m_activeWorkspace) {
+                WS->m_forceRendering = false;
+                WS->m_visible        = true;
+                WS->m_alpha->setValueAndWarp(1.F);
+                WS->m_renderOffset->setValueAndWarp(Vector2D{});
+            } else
+                cross::hide(WS);
+        }
+        if (mon->m_activeWorkspace)
+            cross::applyFullscreenAlpha(mon, mon->m_activeWorkspace);
+    }
+
     // Zoom back into `id` and go away.
     void startClosing(WORKSPACEID id) {
         auto& o   = *g_ov;
         o.closing = true;
         o.anchor  = id;
         if (o.progress->value() <= 0.001F) {
-            queueTeardown();
+            finish();
             return;
         }
         *o.progress = 0.F;
-        o.progress->setCallbackOnEnd([](auto) { queueTeardown(); });
+        o.progress->setCallbackOnEnd([](auto) { finish(); });
     }
 
     void renderThumbs(const PHLMONITOR& mon) {
@@ -208,21 +246,25 @@ namespace {
             auto& fb = o.fbs[c.id];
             if (!fb)
                 fb = g_pHyprRenderer->createFB("hyprcross overview");
+            // set up like Hyprland's own window snapshots (makeSnapshotFB); shaders
+            // read the framebuffer's image description
             if (fb->m_size != mon->m_pixelSize)
-                fb->alloc(mon->m_pixelSize.x, mon->m_pixelSize.y, mon->m_output->state->state().drmFormat);
+                fb->alloc(mon->m_pixelSize.x, mon->m_pixelSize.y, DRM_FORMAT_ABGR8888);
+            fb->setImageDescription(mon->workBufferImageDescription());
 
-            CRegion fakeDamage{0, 0, INT16_MAX, INT16_MAX};
+            CRegion fakeDamage{CBox{{}, mon->m_transformedSize}};
             if (!g_pHyprRenderer->beginFullFakeRender(mon, fakeDamage, fb))
                 continue;
 
-            g_pHyprRenderer->m_renderPass.add(makeUnique<CClearPassElement>(CClearPassElement::SClearData{CHyprColor{0, 0, 0, 1}}));
+            g_pHyprRenderer->draw(CClearPassElement::SClearData{CHyprColor{0, 0, 0, 1}});
+            g_pHyprRenderer->startRenderPass();
 
             const bool VISIBLE = WS->m_visible;
             mon->m_activeWorkspace = WS;
             WS->m_visible          = true;
             WS->m_alpha->setValueAndWarp(1.F);
 
-            g_pHyprRenderer->renderWorkspace(mon, WS, NOW, CBox{{}, mon->m_pixelSize});
+            renderWorkspace(mon, WS, NOW, CBox{{}, mon->m_pixelSize});
             g_pHyprRenderer->endRender();
 
             WS->m_alpha->setValueAndWarp(0.F);
@@ -240,8 +282,16 @@ namespace {
     void onPreRender(PHLMONITOR mon) {
         if (!g_ov || g_ov->monitor != mon)
             return;
+        if (g_ov->finished) {
+            if (!g_ov->restored) {
+                restore(mon);
+                g_ov->restored = true;
+                queueTeardown();
+            }
+            return;
+        }
         if (g_pSessionLockManager->isSessionLocked()) {
-            cross::overview::teardown();
+            finish();
             return;
         }
 
@@ -258,12 +308,11 @@ namespace {
 
         renderThumbs(mon);
 
-        cross::setTopLayerAlpha(mon, o.topAlpha * (1.F - o.progress->value()), true);
         mon->m_forceFullFrames = std::max(mon->m_forceFullFrames, 1);
     }
 
     void onStage(eRenderStage stage) {
-        if (stage != RENDER_POST_WINDOWS || !g_ov || g_renderingThumbs)
+        if (stage != RENDER_LAST_MOMENT || !g_ov || g_ov->finished || g_renderingThumbs)
             return;
 
         auto&      o   = *g_ov;
@@ -380,11 +429,11 @@ namespace {
         o.workspaceListener = ev.workspace.active.listen([](PHLWORKSPACE ws) {
             // something other than a pick switched workspaces under us
             if (g_ov && !g_ov->closing && ws && ws->m_monitor == g_ov->monitor && ws != g_ov->startedOn)
-                cross::overview::teardown();
+                finish();
         });
         o.monitorListener   = ev.monitor.removed.listen([](PHLMONITOR mon) {
             if (g_ov && g_ov->monitor == mon)
-                cross::overview::teardown();
+                finish();
         });
     }
 }
@@ -401,28 +450,23 @@ namespace cross::overview {
         auto&      o   = *g_ov;
         const auto MON = o.monitor.lock();
 
-        for (auto const& c : o.cells) {
-            const auto WS = cross::find(c.id);
-            if (!WS)
-                continue;
-            if (MON && WS == MON->m_activeWorkspace) {
-                WS->m_forceRendering = false;
-                WS->m_visible        = true;
-                WS->m_alpha->setValueAndWarp(1.F);
-                WS->m_renderOffset->setValueAndWarp(Vector2D{});
-            } else
-                cross::hide(WS);
+        // Normally restore() already ran from render.pre. If not (plugin unload,
+        // monitor gone), just stop forcing them to render; no warping here.
+        if (!o.restored) {
+            for (auto const& c : o.cells)
+                if (const auto WS = cross::find(c.id))
+                    WS->m_forceRendering = false;
+            if (MON && MON->m_activeWorkspace)
+                *MON->m_activeWorkspace->m_alpha = 1.F;
         }
 
-        if (const auto GL = g_pHyprRenderer->glBackend().lock())
+        // glBackend() is uniquely owned: lock()ing it terminates Hyprland
+        if (const auto GL = g_pHyprRenderer->glBackend())
             GL->makeEGLCurrent();
         o.fbs.clear();
 
-        if (MON) {
-            if (MON->m_activeWorkspace)
-                cross::setTopLayerAlpha(MON, cross::topLayersHidden(MON->m_activeWorkspace) ? 0.F : 1.F, true);
+        if (MON)
             g_pHyprRenderer->damageMonitor(MON);
-        }
 
         g_ov.reset();
         g_pInputManager->refocus();
@@ -449,7 +493,6 @@ namespace cross::overview {
         o.cells     = *CELLS;
         o.selected  = SELECTED;
         o.anchor    = MON->m_activeWorkspace->m_id;
-        o.topAlpha  = cross::topLayersHidden(MON->m_activeWorkspace) ? 0.F : 1.F;
 
         if (!lua_isnoneornil(L, 3)) {
             lua_pushvalue(L, 3);
@@ -461,6 +504,10 @@ namespace cross::overview {
         Animation::mgr()->createAnimation(Vector2D{}, o.offset, CONFIG, AVARDAMAGE_NONE);
         o.progress->setUpdateCallback([](auto) { damage(); });
         o.offset->setUpdateCallback([](auto) { damage(); });
+
+        // the bar fades out on its own animation; warping layer alphas from a
+        // plugin aborts Hyprland
+        cross::setTopLayerAlpha(MON, 0.F);
 
         listen(o);
         damage();
