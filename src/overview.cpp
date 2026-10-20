@@ -281,13 +281,20 @@ namespace {
             cross::applyFullscreenAlpha(mon, mon->m_activeWorkspace);
     }
 
-    // Spring the highlight (and with it the view) onto a thumbnail.
-    void snapTo(const SCell& c) {
-        auto& o      = *g_ov;
-        o.target     = c.id;
-        *o.highlight = posOf(c);
-        *o.lean      = Vector2D{};
+    // Spring the highlight (and with it the view) to `pos`, starting from where
+    // the frame is drawn now: the lean is folded into the highlight first, so a
+    // step taken mid-lean carries on from there instead of jumping back.
+    void springTo(const Vector2D& pos) {
+        auto& o = *g_ov;
+        o.highlight->setValueAndWarp(framePos(o));
+        o.lean->setValueAndWarp(Vector2D{});
+        *o.highlight = pos;
         damage();
+    }
+
+    void snapTo(const SCell& c) {
+        g_ov->target = c.id;
+        springTo(posOf(c));
     }
 
     // The thumbnail one step from the highlighted one, if there is one.
@@ -388,8 +395,7 @@ namespace {
         o.closing = true;
         o.anchor  = id;
         if (const auto C = cellFor(o, id))
-            *o.highlight = posOf(*C);
-        *o.lean = Vector2D{};
+            springTo(posOf(*C));
         if (o.progress->value() <= 0.001F) {
             finish();
             return;
