@@ -233,8 +233,10 @@ local function pinchEnd(e)
     if ov.open then hl.dispatch(hl.dsp.submap("cross_overview")) end
 end
 
-hl.gesture({ fingers = 3, direction = "pinchin", action = { start = pinchStart, update = pinchUpdate, finish = pinchEnd } })
-hl.gesture({ fingers = 3, direction = "pinchout", action = { finish = function()
+-- Hyprland names pinches by zoom: fingers coming together (scale < 1) is
+-- "pinchout", spreading them is "pinchin".
+hl.gesture({ fingers = 3, direction = "pinchout", action = { start = pinchStart, update = pinchUpdate, finish = pinchEnd } })
+hl.gesture({ fingers = 3, direction = "pinchin", action = { finish = function()
     if ov.open then ovPick(ws(ov.col, ov.row)) end
 end } })
 
