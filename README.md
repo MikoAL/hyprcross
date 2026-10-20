@@ -27,11 +27,12 @@ that both want the whole screen can live in the same column. Workspace id is
 ## Build
 
 ```sh
-make install   # -> ~/.local/lib/hyprcross/hyprcross.so, picked up on the next `hyprctl reload`
+make install   # -> ~/.local/lib/hyprland/hyprcross.so, loaded by cross.lua
+make reload    # rebuild, install and swap it into the running Hyprland
 ```
 
 The plugin only loads into the exact Hyprland it was built against. After a
-Hyprland update, run `make install` again and reload. Until you do, `cross.lua`
+Hyprland update, run `make reload`. Until you do, `cross.lua`
 falls back to switching on release with no rubber band.
 
 ## Tuning

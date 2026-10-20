@@ -242,8 +242,16 @@ namespace {
         if (!BEFORE || !AFTER)
             return luaL_error(L, "cross.swipe_begin: workspace ids must be integers or nil");
 
+        // A swipe whose end never arrived would otherwise block every later one.
+        if (g_swipe) {
+            if (g_swipe->begin && !g_swipe->monitor.expired())
+                finish(true);
+            else
+                g_swipe.reset();
+        }
+
         const auto MON = Desktop::focusState()->monitor();
-        if (g_swipe || !MON || !MON->m_activeWorkspace || g_pSessionLockManager->isSessionLocked() || g_pUnifiedWorkspaceSwipe->isGestureInProgress()) {
+        if (!MON || !MON->m_activeWorkspace || g_pSessionLockManager->isSessionLocked() || g_pUnifiedWorkspaceSwipe->isGestureInProgress()) {
             lua_pushboolean(L, false);
             return 1;
         }

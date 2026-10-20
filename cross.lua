@@ -22,7 +22,7 @@ local M = {}
 local COLUMNS  = 10
 local MAX_ROWS = 10 -- rows 0-9
 
-local PLUGIN   = os.getenv("HOME") .. "/.local/lib/hyprcross/hyprcross.so"
+local PLUGIN   = os.getenv("HOME") .. "/.local/lib/hyprland/hyprcross.so"
 local BUMP_PX  = 36  -- how far the screen nudges when you hit an edge
 local BUMP_MS  = 90  -- how long it stays out before springing back
 
@@ -152,7 +152,8 @@ hl.bind("SUPER + mouse_up",   function() horizontal(-1) end)
 local swipe = { axis = nil, moved = 0, tracking = false }
 
 local function swipeStart(e)
-    swipe.axis     = e.direction == "VERTICAL" and "y" or "x"
+    -- e.direction is where the fingers actually went (LEFT/RIGHT/UP/DOWN)
+    swipe.axis     = (e.direction == "UP" or e.direction == "DOWN" or e.direction == "VERTICAL") and "y" or "x"
     swipe.moved    = e.delta[swipe.axis]
     swipe.tracking = false
 
@@ -175,6 +176,7 @@ local function swipeUpdate(e)
     if swipe.tracking then plugin().swipe_update(d, e.time_ms) end
 end
 
+-- Hyprland reads this one as "finish" (its error message also says "end", which is ignored).
 local function swipeEnd(e)
     if swipe.tracking then
         plugin().swipe_end(e.cancelled)
@@ -187,7 +189,7 @@ local function swipeEnd(e)
 end
 
 for _, direction in ipairs({ "horizontal", "vertical" }) do
-    hl.gesture({ fingers = 3, direction = direction, action = { start = swipeStart, update = swipeUpdate, ["end"] = swipeEnd } })
+    hl.gesture({ fingers = 3, direction = direction, action = { start = swipeStart, update = swipeUpdate, finish = swipeEnd } })
 end
 
 return M
