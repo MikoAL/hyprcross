@@ -73,8 +73,8 @@ namespace {
 
     // Moving the highlight: finger travel per step for 3-finger swipes and
     // 2-finger scrolling, and how long scrolling must pause to count as letting go.
-    constexpr double SWIPE_DIST     = 250.0;
-    constexpr double SCROLL_DIST    = 200.0;
+    constexpr double SWIPE_DIST     = 170.0;
+    constexpr double SCROLL_DIST    = 130.0;
     constexpr int    SCROLL_IDLE_MS = 60;
 
     // A drag steps along one axis only, picked by whichever way the fingers go
