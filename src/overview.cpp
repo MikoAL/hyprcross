@@ -71,10 +71,10 @@ namespace {
     constexpr double FLICK_SPEED = 0.004;
     constexpr int    VELOCITY_MS = 80;
 
-    // Moving the highlight: finger travel per step for 3-finger swipes and
-    // 2-finger scrolling, and how long scrolling must pause to count as letting go.
-    constexpr double SWIPE_DIST     = 170.0;
-    constexpr double SCROLL_DIST    = 130.0;
+    // Moving the highlight: finger travel per step, the same for 3-finger swipes
+    // and 2-finger scrolling (both arrive as raw touchpad movement; scroll_factor
+    // isn't applied yet), and how long scrolling must pause to count as letting go.
+    constexpr double STEP_DIST      = 110.0;
     constexpr int    SCROLL_IDLE_MS = 60;
 
     // A drag steps along one axis only, picked by whichever way the fingers go
@@ -549,7 +549,7 @@ namespace {
             }
             if (e.delta == 0)
                 return release();
-            const double D = e.delta / SCROLL_DIST;
+            const double D = e.delta / STEP_DIST;
             drag(HORIZONTAL ? Vector2D{D, 0.0} : Vector2D{0.0, D});
             g_ov->scrollTimer->updateTimeout(std::chrono::milliseconds(SCROLL_IDLE_MS));
         });
@@ -718,7 +718,7 @@ namespace cross::overview {
         if (!g_ov || g_ov->closing)
             return 0;
         // the grid follows the fingers, so the highlight goes the other way
-        drag(Vector2D{-DX, -DY} / SWIPE_DIST);
+        drag(Vector2D{-DX, -DY} / STEP_DIST);
         return 0;
     }
 

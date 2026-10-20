@@ -57,7 +57,7 @@ falls back to switching on release with no rubber band, and the pinch does nothi
 - `src/overview.cpp`: `THUMB_FRAC` / `SELECTED_SCALE` / `GAP_X` / `GAP_Y` (cross
   layout), `BACKDROP_DIM` / `UNSELECTED_ALPHA` / `BORDER_PX` (look),
   `PINCH_RANGE` / `OPEN_RATIO` / `FLICK_SPEED` (when a pinch opens it),
-  `SWIPE_DIST` / `SCROLL_DIST` (finger travel per step), `CAMERA_LAG_MS` (how far the view trails).
+  `STEP_DIST` (finger travel per step, swipes and scrolling alike), `CAMERA_LAG_MS` (how far the view trails).
 - `cross.lua`: `BUMP_PX` / `BUMP_MS` (the keyboard edge bump).
 - The settle animation is the `workspaces` animation in `hyprland.lua` (the `wsSnap` spring);
   the overview's zoom and slide use it too.
