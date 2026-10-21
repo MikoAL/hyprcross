@@ -12,15 +12,17 @@
 inline HANDLE PHANDLE = nullptr;
 
 namespace cross {
-    // A live workspace by id, or nullptr. Inert ones (being destroyed) have
-    // their animated values freed, so they count as missing.
+    // Inert workspaces (being destroyed) have their animated values freed.
+    inline bool live(const PHLWORKSPACE& ws) {
+        return ws && !ws->inert() && ws->m_alpha && ws->m_renderOffset;
+    }
+
+    // A live workspace by id, or nullptr.
     inline PHLWORKSPACE find(WORKSPACEID id) {
         if (id == WORKSPACE_INVALID)
             return nullptr;
         const auto WS = State::workspaceState()->query().id(id).run();
-        if (!WS || WS->inert() || !WS->m_alpha || !WS->m_renderOffset)
-            return nullptr;
-        return WS;
+        return live(WS) ? WS : nullptr;
     }
 
     // Layers above fullscreen windows (bars) are hidden on a fullscreen workspace;
@@ -45,7 +47,7 @@ namespace cross {
     }
 
     inline void hide(const PHLWORKSPACE& ws) {
-        if (!ws)
+        if (!live(ws))
             return;
         ws->m_forceRendering = false;
         ws->m_alpha->setValueAndWarp(0.F);

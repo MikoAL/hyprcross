@@ -4,6 +4,12 @@ local stub = require("stub_hl")
 _G.hl = stub.hl
 local cross = require("cross")
 
+-- cross.lua's workspace.active handler (it tracks the slot each column was left on)
+local onActive
+for _, call in ipairs(stub.calls) do
+    if call[1] == "hl.on" and call[2] == "workspace.active" then onActive = call[3]; break end
+end
+
 local function cellsById(cells)
     local byId = {}
     for _, c in ipairs(cells) do byId[c.id] = c end
@@ -45,6 +51,28 @@ do
     stub.reset()
     local byId = cellsById(cross.gridCells(4, 2))
     check("current empty slot", byId[42] and byId[41] and byId[42].y == 2)
+end
+
+-- each column's home (the slot on the overview's row) is the one it was last left on,
+-- the current slot for the column you're in, and the top once that slot has emptied
+do
+    stub.reset(); stub.occupy(10, 30, 31, 32, 50)
+    for _, id in ipairs({ 31, 52, 10 }) do
+        stub.active = id
+        onActive()
+    end
+    local homes = {}
+    for _, c in ipairs(cross.gridCells(2, 0)) do
+        if c.home then
+            check("one home per column", homes[c.x] == nil)
+            homes[c.x] = c.id
+        end
+    end
+    check("remembered slot", homes[2] == 31)
+    check("current column's slot", homes[1] == 20)
+    check("emptied slot falls back to the top", homes[4] == 50)
+    check("untouched column is its top", homes[0] == 10)
+    check("every column has one", homes[9] == 100)
 end
 
 print("ok")

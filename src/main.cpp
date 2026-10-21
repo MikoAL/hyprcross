@@ -94,6 +94,11 @@ namespace {
         return sum / DT;
     }
 
+    // The swipe can still be drawn: its workspace and monitor are both around.
+    bool swipeAlive() {
+        return g_swipe && live(g_swipe->begin) && !g_swipe->monitor.expired();
+    }
+
     void render(SSwipe& s) {
         const auto   MON  = s.monitor.lock();
         const double DIST = screenDistance(s);
@@ -216,20 +221,19 @@ namespace {
             return luaL_error(L, "cross.swipe_begin: workspace ids must be integers or nil");
 
         // A swipe whose end never arrived would otherwise block every later one.
-        if (g_swipe) {
-            if (g_swipe->begin && !g_swipe->monitor.expired())
-                finish(true);
-            else
-                g_swipe.reset();
-        }
+        if (swipeAlive())
+            finish(true);
+        g_swipe.reset();
 
+        // the overview owns every workspace's offset and alpha while it's up, closing included
         const auto MON = Desktop::focusState()->monitor();
-        if (!MON || !MON->m_activeWorkspace || g_pSessionLockManager->isSessionLocked() || g_pUnifiedWorkspaceSwipe->isGestureInProgress()) {
+        if (!MON || !live(MON->m_activeWorkspace) || overview::active() || g_pSessionLockManager->isSessionLocked() ||
+            g_pUnifiedWorkspaceSwipe->isGestureInProgress()) {
             lua_pushboolean(L, false);
             return 1;
         }
 
-        if (const auto BUMPED = g_bumped.lock())
+        if (const auto BUMPED = g_bumped.lock(); live(BUMPED))
             BUMPED->m_renderOffset->setValueAndWarp(Vector2D{});
         g_bumped.reset();
 
@@ -251,13 +255,21 @@ namespace {
         const uint32_t TIME = sc<uint32_t>(luaL_optinteger(L, 2, 0));
         if (!g_swipe)
             return 0;
-        if (!g_swipe->begin || g_swipe->monitor.expired()) {
+        if (!swipeAlive()) {
             g_swipe.reset();
             return 0;
         }
 
-        auto& s = *g_swipe;
+        // Toward a neighbour, travel past a full screen has nothing more to show;
+        // banking it would make turning back do nothing until it's unwound. Past
+        // an edge it keeps counting: that's the rubber band.
+        auto&        s   = *g_swipe;
+        const double MAX = swipeDistance();
         s.delta += D;
+        if (s.after != WORKSPACE_INVALID)
+            s.delta = std::max(s.delta, -MAX);
+        if (s.before != WORKSPACE_INVALID)
+            s.delta = std::min(s.delta, MAX);
         s.recent.emplace_back(TIME, D);
         while (s.recent.size() > 2 && TIME - s.recent.front().first > VELOCITY_MS)
             s.recent.pop_front();
@@ -270,7 +282,7 @@ namespace {
         const bool CANCELLED = lua_toboolean(L, 1);
         if (!g_swipe)
             return 0;
-        if (!g_swipe->begin || g_swipe->monitor.expired()) {
+        if (!swipeAlive()) {
             g_swipe.reset();
             return 0;
         }
@@ -284,7 +296,7 @@ namespace {
             return luaL_error(L, "cross.bump: axis must be \"x\" or \"y\"");
         const double PX  = luaL_checknumber(L, 2);
         const auto   MON = Desktop::focusState()->monitor();
-        if (g_swipe || !MON || !MON->m_activeWorkspace)
+        if (g_swipe || overview::active() || !MON || !live(MON->m_activeWorkspace))
             return 0;
 
         const auto WS = MON->m_activeWorkspace;
@@ -294,7 +306,7 @@ namespace {
     }
 
     int luaSettle(lua_State* L) {
-        if (const auto WS = g_bumped.lock(); WS && !g_swipe)
+        if (const auto WS = g_bumped.lock(); live(WS) && !g_swipe)
             *WS->m_renderOffset = Vector2D{};
         g_bumped.reset();
         return 0;
@@ -337,18 +349,24 @@ APICALL EXPORT PLUGIN_DESCRIPTION_INFO PLUGIN_INIT(HANDLE handle) {
     ok &= HyprlandAPI::addLuaFunction(PHANDLE, "cross", "overview_drag", overview::luaDrag);
     ok &= HyprlandAPI::addLuaFunction(PHANDLE, "cross", "overview_release", overview::luaRelease);
     ok &= HyprlandAPI::addLuaFunction(PHANDLE, "cross", "overview_move", overview::luaMove);
+    ok &= HyprlandAPI::addLuaFunction(PHANDLE, "cross", "overview_mode", overview::luaMode);
     ok &= HyprlandAPI::addLuaFunction(PHANDLE, "cross", "overview_selected", overview::luaSelected);
     ok &= HyprlandAPI::addLuaFunction(PHANDLE, "cross", "overview_close", overview::luaClose);
     ok &= HyprlandAPI::addLuaFunction(PHANDLE, "cross", "overview_active", overview::luaActive);
     if (!ok)
         throw std::runtime_error("[hyprcross] couldn't register Lua functions (is the config Lua?)");
 
+    overview::init();
+
     return {"hyprcross", "Finger-tracking swipes and a pinch overview for PS-style cross workspaces", "miko", "0.1.0"};
 }
 
 APICALL EXPORT void PLUGIN_EXIT() {
-    overview::teardown();
-    if (g_swipe && g_swipe->begin)
-        g_swipe->begin->m_renderOffset->setValueAndWarp(Vector2D{});
+    overview::exit();
+    if (swipeAlive())
+        finish(true);
     g_swipe.reset();
+    if (const auto WS = g_bumped.lock(); live(WS))
+        *WS->m_renderOffset = Vector2D{};
+    g_bumped.reset();
 }

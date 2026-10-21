@@ -36,9 +36,16 @@ While the overview is up:
 | Enter / spread 3 fingers | go to the highlighted workspace |
 | Click a thumbnail | go there |
 | Escape | back to where you were |
+| Tab | flip between cross and free mode |
 
-While your fingers are down the highlight leans toward where it's going, and
-stiffly at the edge of the grid. Nothing else gets keyboard, scroll or click
+It has two modes. In **cross** mode (the default) the highlight stays in the
+middle of the screen and the grid slides under it, like the PS3's XMB, except
+that every column shows all its slots. In **free** mode the highlight moves over
+the grid and the view follows. `OVERVIEW_MODE` in `cross.lua` picks the one it
+opens in; Tab flips it until the next config reload.
+
+While your fingers are down the highlight leans toward where it's going (in
+cross mode the grid does the leaning), and stiffly at the edge of the grid. Nothing else gets keyboard, scroll or click
 input while it's up.
 
 ## Build
@@ -61,9 +68,10 @@ falls back to switching on release with no rubber band, and the pinch does nothi
   `THUMB_RES` / `FOCUS_HZ` / `BACKGROUND_HZ` (thumbnail resolution and refresh
   rates: the frame-rate knobs),
   `PINCH_RANGE` / `OPEN_RATIO` / `FLICK_SPEED` (when a pinch opens it),
-  `STEP_DIST` / `STEP_DIST_Y` (finger travel per sideways / up-down step, swipes and scrolling alike), `REPEAT_DELAY` (extra travel before a drag's second step), `LEAN_MAX` / `EDGE_RESIST` (the lean), `CAMERA_LAG_MS` (how far the view trails).
-- `cross.lua`: `BUMP_PX` / `BUMP_MS` (the keyboard edge bump).
+  `STEP_DIST` / `STEP_DIST_Y` (finger travel per sideways / up-down step, swipes and scrolling alike), `REPEAT_DELAY` (extra travel before a drag's second step), `LEAN_MAX` / `EDGE_RESIST` (the lean), `CAMERA_LAG_MS` (how far the view trails in free mode).
+- `cross.lua`: `BUMP_PX` / `BUMP_MS` (the keyboard edge bump), `OVERVIEW_MODE` (`"cross"` or `"free"`).
 - The settle animation is the `workspaces` animation in `hyprland.lua` (the `wsSnap` spring);
   the overview's zoom and slide use it too.
 
-`make test` checks the overview's grid layout in `cross.lua` against a stubbed `hl`.
+`make test` checks the overview's grid layout and the gesture routing in
+`cross.lua` against a stubbed `hl`.

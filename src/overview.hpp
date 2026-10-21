@@ -9,17 +9,19 @@ extern "C" {
 
 namespace cross::overview {
     // Lua: hl.plugin.cross.overview_*
-    int luaBegin(lua_State* L);    // (cells, selected, on_pick) -> bool
+    int luaBegin(lua_State* L);    // (cells, selected, on_pick, mode "cross"|"free") -> bool
     int luaUpdate(lua_State* L);   // (scale, time_ms)
     int luaEnd(lua_State* L);      // (cancelled) -> bool open
     int luaDrag(lua_State* L);     // (dx, dy) fingers moved, touchpad units
     int luaRelease(lua_State* L);  // () fingers lifted
     int luaMove(lua_State* L);     // (dx, dy) to the neighbouring thumbnail
+    int luaMode(lua_State* L);     // ("cross"|"free") the view sits on the frame / trails it
     int luaSelected(lua_State* L); // () -> id under the highlight
     int luaClose(lua_State* L);    // (id|nil)
     int luaActive(lua_State* L);   // () -> bool
 
     bool active();
-    void init();
-    void teardown();
+    void init();     // plugin load
+    void exit();     // plugin unload
+    void teardown(); // drop the overview now
 }

@@ -22,9 +22,10 @@ reload: install
 	-hyprctl plugin unload $(PREFIX)/hyprcross.so
 	hyprctl plugin load $(PREFIX)/hyprcross.so
 
-# Lua logic that doesn't need Hyprland (cross layout).
+# Lua logic that doesn't need Hyprland (cross layout, gesture routing).
 test:
 	lua5.5 tests/cells_test.lua
+	lua5.5 tests/gestures_test.lua
 
 clean:
 	rm -f hyprcross.so
