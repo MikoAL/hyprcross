@@ -114,4 +114,20 @@ do
     cross.ov.pinching = false
 end
 
+-- an empty slot with a used one further down can still be swiped down from (1-1, gap at 1-2, 1-3)
+do
+    stub.reset(); stub.occupy(10, 11, 13); stub.active = 12; cross.ov.open = false
+    local before, after = "unset", "unset"
+    plugin({ swipe_begin = function(_, b, a) before, after = b, a; return true end })
+    swipe.start({ direction = "UP", delta = { x = 0, y = -10 }, time_ms = 0 })
+    swipe.finish({ cancelled = false })
+    check("gap slot reveals the one below", after == 13)
+    check("and the one above", before == 11)
+
+    stub.active = 14
+    swipe.start({ direction = "UP", delta = { x = 0, y = -10 }, time_ms = 0 })
+    swipe.finish({ cancelled = false })
+    check("nothing below the last empty slot", after == nil)
+end
+
 print("ok")

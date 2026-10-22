@@ -22,7 +22,7 @@ that both want the whole screen can live in the same column. Workspace id is
 | Super + Ctrl + left/right | prev/next column, on the slot you last left it on |
 | Super + Ctrl + up/down | slot above/below (one empty slot past the last at most) |
 | Super + Ctrl + Shift + arrows | the same, carrying the focused window |
-| Super + 1-0 / Super + Shift + 1-0 | top of a column / send the window there |
+| Super + 1-0 / Super + Shift + 1-0 | a column, on the slot you last left it on / send the window there |
 | Super + scroll | prev/next column |
 | 3-finger swipe | drag between columns and slots |
 | 3-finger pinch in | overview: the screen shrinks into a grid of every column and slot |

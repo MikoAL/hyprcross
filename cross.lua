@@ -6,10 +6,10 @@
 -- Workspace id = 10 * column + row, so column 1 is 10, 11, 12... Hyprland picks
 -- the slide direction by comparing ids; this ordering keeps it right both ways.
 --
---   Super + 1-0                      top of column 1-10
---   Super + Shift + 1-0              send window to top of column 1-10
+--   Super + 1-0                      column 1-10, on the slot you last left it on
+--   Super + Shift + 1-0              send window to column 1-10, same slot
 --   Super + Ctrl + left/right        prev/next column, on the slot you last left it on
---   Super + Ctrl + up/down           slot above/below (stops one empty slot past the last)
+--   Super + Ctrl + up/down           slot above/below (stops one empty slot past the last used one)
 --   Super + Ctrl + Shift + arrows    same moves, carrying the active window along
 --   Super + scroll                   prev/next column
 --   3-finger swipe                   drags the screen with your fingers (needs hyprcross.so);
@@ -114,8 +114,14 @@ end
 local function slotTarget(col, row, dir, carry)
     local target = row + dir
     if target < 0 or target >= MAX_ROWS then return nil end
-    -- Going down from an empty slot would just open more empty ones.
-    if dir > 0 and not carry and not occupied(ws(col, row)) then return nil end
+    -- Going down from an empty slot would just open more empty ones, unless
+    -- there's a used one further down (a gap left by closing windows).
+    if dir > 0 and not carry then
+        for r = row, MAX_ROWS - 1 do
+            if occupied(ws(col, r)) then return ws(col, target) end
+        end
+        return nil
+    end
     return ws(col, target)
 end
 
@@ -160,8 +166,8 @@ for col = 1, COLUMNS do
     end
 
     local key = col % 10
-    hl.bind("SUPER + " .. key,         function() go(col, 0) end)
-    hl.bind("SUPER + SHIFT + " .. key, function() go(col, 0, true) end)
+    hl.bind("SUPER + " .. key,         function() go(col, columnTarget(col) % 10) end)
+    hl.bind("SUPER + SHIFT + " .. key, function() go(col, columnTarget(col) % 10, true) end)
 end
 
 hl.bind("SUPER + CTRL + left",  function() horizontal(-1) end)

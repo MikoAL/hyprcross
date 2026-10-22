@@ -26,6 +26,7 @@ reload: install
 test:
 	lua5.5 tests/cells_test.lua
 	lua5.5 tests/gestures_test.lua
+	lua5.5 tests/binds_test.lua
 
 clean:
 	rm -f hyprcross.so
