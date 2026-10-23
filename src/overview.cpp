@@ -922,6 +922,7 @@ namespace cross::overview {
 
     int luaEnd(lua_State* L) {
         const bool CANCELLED = lua_toboolean(L, 1);
+        const bool FORCE     = lua_toboolean(L, 2);
         if (!g_ov || g_ov->closing) {
             lua_pushboolean(L, g_ov && !g_ov->closing);
             return 1;
@@ -939,8 +940,8 @@ namespace cross::overview {
         }
         o.recent.clear();
 
-        bool open = false;
-        if (!CANCELLED) {
+        bool open = FORCE;
+        if (!CANCELLED && !FORCE) {
             if (std::abs(vel) >= FLICK_SPEED)
                 open = vel > 0;
             else

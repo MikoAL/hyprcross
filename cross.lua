@@ -14,9 +14,10 @@
 --   Super + scroll                   prev/next column
 --   3-finger swipe                   drags the screen with your fingers (needs hyprcross.so);
 --                                    pushing past an edge rubber-bands
---   3-finger pinch in                overview: a grid of every column and slot (needs hyprcross.so);
+--   3-finger pinch in / Super + Tab  overview: a grid of every column and slot (needs hyprcross.so);
 --                                    swipes/2-finger scroll/arrows move, Enter/spread/click go, Escape backs out,
---                                    Tab flips between the cross and free modes (OVERVIEW_MODE)
+--                                    Tab flips between the cross and free modes (OVERVIEW_MODE),
+--                                    Super + Tab again closes it
 --
 -- Without the plugin loaded, swipes still switch on release, edges just stop and
 -- the pinch does nothing.
@@ -247,6 +248,17 @@ local function pinchEnd(e)
     if ov.open then hl.dispatch(hl.dsp.submap("cross_overview")) end
 end
 
+-- Super + Tab: the same overview without a pinch, zooming out on its own.
+local function ovOpen()
+    local p = ovSync()
+    if not p or ov.open or ov.pinching then return end
+    local col, row = current()
+    if not p.overview_begin(gridCells(col, row), ws(col, row), ovPick, ov.mode) then return end
+    ov.open = p.overview_end(false, true)
+    if ov.open then hl.dispatch(hl.dsp.submap("cross_overview")) end
+end
+hl.bind("SUPER + Tab", ovOpen)
+
 -- Hyprland names pinches by zoom: fingers coming together (scale < 1) is
 -- "pinchout", spreading them is "pinchin".
 hl.gesture({ fingers = 3, direction = "pinchout", action = { start = pinchStart, update = pinchUpdate, finish = pinchEnd } })
@@ -271,6 +283,7 @@ hl.define_submap("cross_overview", function()
     hl.bind("down",   ovKey(function() plugin().overview_move(0, 1) end), held)
     hl.bind("Return", ovKey(ovPickSelected))
     hl.bind("Escape", ovKey(ovCancel))
+    hl.bind("SUPER + Tab", ovKey(ovCancel))
     hl.bind("Tab",    ovKey(function()
         ov.mode = ov.mode == "cross" and "free" or "cross"
         plugin().overview_mode(ov.mode)

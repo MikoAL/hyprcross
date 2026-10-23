@@ -25,7 +25,7 @@ that both want the whole screen can live in the same column. Workspace id is
 | Super + 1-0 / Super + Shift + 1-0 | a column, on the slot you last left it on / send the window there |
 | Super + scroll | prev/next column |
 | 3-finger swipe | drag between columns and slots |
-| 3-finger pinch in | overview: the screen shrinks into a grid of every column and slot |
+| 3-finger pinch in / Super + Tab | overview: the screen shrinks into a grid of every column and slot |
 
 While the overview is up:
 
@@ -35,7 +35,7 @@ While the overview is up:
 | Arrow keys / mouse wheel | step the highlight (hold an arrow to keep going) |
 | Enter / spread 3 fingers | go to the highlighted workspace |
 | Click a thumbnail | go there |
-| Escape | back to where you were |
+| Escape / Super + Tab | back to where you were |
 | Tab | flip between cross and free mode |
 
 It has two modes. In **cross** mode (the default) the highlight stays in the

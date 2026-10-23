@@ -4,10 +4,11 @@ local stub = require("stub_hl")
 _G.hl = stub.hl
 local cross = require("cross")
 
--- the handlers cross.lua registered, by direction
-local gestures = {}
+-- the handlers cross.lua registered, by direction, and its top-level binds
+local gestures, binds = {}, {}
 for _, call in ipairs(stub.calls) do
     if call[1] == "hl.gesture" then gestures[call[2].direction] = call[2].action end
+    if call[1] == "hl.bind" and not binds[call[2]] then binds[call[2]] = call[3] end
 end
 local swipe, pinch, spread = gestures.horizontal, gestures.pinchout, gestures.pinchin
 
@@ -112,6 +113,26 @@ do
     pinch.start({ scale = 0.9, time_ms = 0 })
     check("the flip sticks for the next pinch", modes[2] == "free")
     cross.ov.pinching = false
+end
+
+-- Super + Tab opens the overview straight away, and closes it again from inside
+do
+    stub.reset(); stub.active = 21; cross.ov.open, cross.ov.pinching = false, false
+    local begun, forced
+    plugin({ overview_begin = function(_, selected) begun = selected; return true end,
+             overview_end = function(cancelled, open) forced = not cancelled and open; return true end,
+             overview_active = function() return true end })
+    local open, close = binds["SUPER + Tab"], nil
+    for _, call in ipairs(stub.submaps) do
+        if call[1] == "SUPER + Tab" then close = call[2] end
+    end
+    open()
+    check("Super + Tab opens on the current slot", begun == 21)
+    check("without waiting for a pinch", forced == true)
+    check("and is open", cross.ov.open)
+    stub.reset()
+    close()
+    check("Super + Tab again closes it", called("hl.plugin.cross.overview_close") and not cross.ov.open)
 end
 
 -- an empty slot with a used one further down can still be swiped down from (1-1, gap at 1-2, 1-3)
