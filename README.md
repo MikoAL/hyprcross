@@ -25,6 +25,7 @@ that both want the whole screen can live in the same column. Workspace id is
 | Super + 1-0 / Super + Shift + 1-0 | a column, on the slot you last left it on / send the window there |
 | Super + scroll | prev/next column |
 | 3-finger swipe | drag between columns and slots |
+| Super + 3-finger swipe | the same, carrying the focused window: it stays under your fingers while the workspaces slide behind it |
 | 3-finger pinch in / Super + Tab | overview: the screen shrinks into a grid of every column and slot |
 
 While the overview is up:

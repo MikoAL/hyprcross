@@ -14,6 +14,8 @@
 --   Super + scroll                   prev/next column
 --   3-finger swipe                   drags the screen with your fingers (needs hyprcross.so);
 --                                    pushing past an edge rubber-bands
+--   Super + 3-finger swipe           the same, carrying the focused window: it stays under your
+--                                    fingers while the workspaces slide behind it
 --   3-finger pinch in / Super + Tab  overview: a grid of every column and slot (needs hyprcross.so);
 --                                    swipes/2-finger scroll/arrows move, Enter/spread/click go, Escape backs out,
 --                                    Tab flips between the cross and free modes (OVERVIEW_MODE),
@@ -301,13 +303,14 @@ hl.on("workspace.active", function() ovSync() end)
 -- What a swipe does is settled when it starts: "overview" moves the highlight,
 -- "track" drags the screen, "release" (no plugin) switches once the fingers
 -- lift, and nil (the plugin said no) does nothing.
-local swipe = { axis = nil, moved = 0, mode = nil }
+local swipe = { axis = nil, moved = 0, mode = nil, carry = false }
 
-local function swipeStart(e)
+local function swipeStart(e, carry)
     -- e.direction is where the fingers actually went (LEFT/RIGHT/UP/DOWN)
     swipe.axis  = (e.direction == "UP" or e.direction == "DOWN" or e.direction == "VERTICAL") and "y" or "x"
     swipe.moved = e.delta[swipe.axis]
     swipe.mode  = nil
+    swipe.carry = carry or false
 
     local p = ovSync()
     if not p then swipe.mode = "release"; return end
@@ -321,9 +324,9 @@ local function swipeStart(e)
     if swipe.axis == "x" then
         before, after = columnTarget(col - 1), columnTarget(col + 1)
     else
-        before, after = slotTarget(col, row, -1), slotTarget(col, row, 1)
+        before, after = slotTarget(col, row, -1, carry), slotTarget(col, row, 1, carry)
     end
-    if p.swipe_begin(swipe.axis, before, after) then
+    if p.swipe_begin(swipe.axis, before, after, carry) then
         swipe.mode = "track"
         p.swipe_update(swipe.moved, e.time_ms)
     end
@@ -350,12 +353,14 @@ local function swipeEnd(e)
         if p then p.swipe_end(e.cancelled) end
     elseif mode == "release" and not e.cancelled and math.abs(swipe.moved) > 50 then
         local dir = swipe.moved < 0 and 1 or -1
-        if swipe.axis == "x" then horizontal(dir) else vertical(dir) end
+        if swipe.axis == "x" then horizontal(dir, swipe.carry) else vertical(dir, swipe.carry) end
     end
 end
 
 for _, direction in ipairs({ "horizontal", "vertical" }) do
     hl.gesture({ fingers = 3, direction = direction, action = { start = swipeStart, update = swipeUpdate, finish = swipeEnd } })
+    hl.gesture({ fingers = 3, direction = direction, mods = "SUPER",
+                 action = { start = function(e) swipeStart(e, true) end, update = swipeUpdate, finish = swipeEnd } })
 end
 
 return M

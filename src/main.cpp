@@ -3,8 +3,11 @@
 // this plugin only moves pixels.
 //
 // Lua API (hl.plugin.cross.*):
-//   swipe_begin(axis, before, after) -> bool   axis "x"|"y"; before/after are workspace
-//                                               ids, or nil for an edge
+//   swipe_begin(axis, before, after, carry) -> bool
+//                                              axis "x"|"y"; before/after are workspace
+//                                              ids, or nil for an edge; carry keeps the
+//                                              focused window under the fingers and
+//                                              takes it along if the swipe commits
 //   swipe_update(delta, time_ms)               raw finger movement along the axis
 //   swipe_end(cancelled)                       commit or spring back
 //   bump(axis, px) / settle()                  nudge the active workspace, then release it
@@ -18,6 +21,10 @@
 #include <hyprland/src/Compositor.hpp>
 #include <hyprland/src/state/WorkspaceState.hpp>
 #include <hyprland/src/desktop/state/FocusState.hpp>
+#include <hyprland/src/desktop/state/WindowState.hpp>
+#include <hyprland/src/desktop/view/Window.hpp>
+#include <hyprland/src/event/EventBus.hpp>
+#include <hyprland/src/config/shared/actions/ConfigActions.hpp>
 #include <hyprland/src/desktop/view/LayerSurface.hpp>
 #include <hyprland/src/render/Renderer.hpp>
 #include <hyprland/src/managers/input/InputManager.hpp>
@@ -58,11 +65,36 @@ namespace {
         WORKSPACEID   before   = WORKSPACE_INVALID; // revealed when content moves right/down
         WORKSPACEID   after    = WORKSPACE_INVALID; // revealed when content moves left/up
         double        delta    = 0;                 // accumulated finger movement
+        PHLWINDOWREF  carry;                        // Super + swipe: the window being carried
         std::deque<std::pair<uint32_t, double>> recent;
     };
 
     std::optional<SSwipe> g_swipe;
     PHLWORKSPACEREF       g_bumped;
+    PHLWINDOWREF          g_carried; // held still until its workspace stops moving
+    CHyprSignalListener   g_preRender;
+
+    void dropCarried() {
+        if (const auto W = g_carried.lock())
+            W->m_floatingOffset = Vector2D{};
+        g_carried.reset();
+    }
+
+    // A carried window stays put on screen while the workspace under it moves:
+    // first with the fingers, then through the settle spring, onto the workspace
+    // it was taken to or back home.
+    void holdCarried() {
+        const auto W = g_carried.lock();
+        if (!W)
+            return;
+        const auto WS       = W->m_workspace;
+        const bool SWIPING  = g_swipe && g_swipe->carry.lock() == W;
+        const bool SETTLING = live(WS) && WS->m_renderOffset->isBeingAnimated();
+        if (live(WS) && (SWIPING || SETTLING))
+            W->m_floatingOffset = -WS->m_renderOffset->value();
+        else
+            dropCarried();
+    }
 
     double swipeDistance() {
         static auto PSWIPEDIST = CConfigValue<Config::INTEGER>("gestures:workspace_swipe_distance");
@@ -149,6 +181,8 @@ namespace {
         auto before = find(s.before);
         auto after  = find(s.after);
 
+        const auto CARRIED = s.carry.lock();
+
         if (!commit) {
             // spring back
             if (auto n = TOWARD_AFTER ? after : before)
@@ -159,6 +193,12 @@ namespace {
             const Vector2D MIDDLE = s.begin->m_renderOffset->value();
             auto           target = find(ID);
             const Vector2D START  = target ? target->m_renderOffset->value() : along(s, FRAC * DIST - SIGN * DIST);
+
+            // The carried window goes over first, so the switch lands with it on top.
+            if (CARRIED && !target)
+                target = State::workspaceState()->create(ID, MON->m_id);
+            if (CARRIED && target)
+                (void)Config::Actions::moveToWorkspace(target, true, CARRIED);
 
             if (target)
                 MON->changeWorkspace(ID);
@@ -191,6 +231,8 @@ namespace {
         g_pHyprRenderer->damageMonitor(MON);
         g_swipe.reset();
         g_pInputManager->refocus();
+        if (commit && CARRIED && CARRIED->m_isMapped)
+            Desktop::focusState()->fullWindowFocus(CARRIED, Desktop::FOCUS_REASON_KEYBIND);
     }
 
     std::optional<WORKSPACEID> optId(lua_State* L, int idx) {
@@ -219,6 +261,7 @@ namespace {
         const auto BEFORE = optId(L, 2), AFTER = optId(L, 3);
         if (!BEFORE || !AFTER)
             return luaL_error(L, "cross.swipe_begin: workspace ids must be integers or nil");
+        const bool CARRY = lua_toboolean(L, 4);
 
         // A swipe whose end never arrived would otherwise block every later one.
         if (swipeAlive())
@@ -241,7 +284,16 @@ namespace {
         s.monitor = MON;
         s.before  = *BEFORE;
         s.after   = *AFTER;
-        g_swipe   = std::move(s);
+
+        dropCarried();
+        if (const auto W = Desktop::focusState()->window(); CARRY && W && W->m_isMapped && W->m_workspace == s.begin) {
+            // drawn above the neighbour's windows as they slide in under it
+            Desktop::windowState()->raise(W);
+            s.carry   = W;
+            g_carried = W;
+        }
+
+        g_swipe = std::move(s);
 
         if (Fullscreen::controller()->getFullscreenWindow(g_swipe->begin))
             setTopLayerAlpha(MON, 1.F);
@@ -357,6 +409,7 @@ APICALL EXPORT PLUGIN_DESCRIPTION_INFO PLUGIN_INIT(HANDLE handle) {
         throw std::runtime_error("[hyprcross] couldn't register Lua functions (is the config Lua?)");
 
     overview::init();
+    g_preRender = Event::bus()->m_events.render.pre.listen([](PHLMONITOR) { holdCarried(); });
 
     return {"hyprcross", "Finger-tracking swipes and a pinch overview for PS-style cross workspaces", "miko", "0.1.0"};
 }
@@ -366,6 +419,8 @@ APICALL EXPORT void PLUGIN_EXIT() {
     if (swipeAlive())
         finish(true);
     g_swipe.reset();
+    g_preRender.reset();
+    dropCarried();
     if (const auto WS = g_bumped.lock(); live(WS))
         *WS->m_renderOffset = Vector2D{};
     g_bumped.reset();
