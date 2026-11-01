@@ -4,10 +4,15 @@ local stub = require("stub_hl")
 _G.hl = stub.hl
 local cross = require("cross")
 
--- the handlers cross.lua registered, by direction, and its top-level binds
-local gestures, binds = {}, {}
+-- the handlers cross.lua registered, by direction, and its top-level binds.
+-- Super + swipe registers a second gesture per direction (it carries the
+-- window); keep those apart so the plain ones aren't overwritten.
+local gestures, superGestures, binds = {}, {}, {}
 for _, call in ipairs(stub.calls) do
-    if call[1] == "hl.gesture" then gestures[call[2].direction] = call[2].action end
+    if call[1] == "hl.gesture" then
+        local into = call[2].mods == "SUPER" and superGestures or gestures
+        into[call[2].direction] = call[2].action
+    end
     if call[1] == "hl.bind" and not binds[call[2]] then binds[call[2]] = call[3] end
 end
 local swipe, pinch, spread = gestures.horizontal, gestures.pinchout, gestures.pinchin
@@ -149,6 +154,12 @@ do
     swipe.start({ direction = "UP", delta = { x = 0, y = -10 }, time_ms = 0 })
     swipe.finish({ cancelled = false })
     check("nothing below the last empty slot", after == nil)
+
+    -- carrying a window (Super + swipe) may go on down into another empty slot
+    local superSwipe = superGestures.vertical
+    superSwipe.start({ direction = "UP", delta = { x = 0, y = -10 }, time_ms = 0 })
+    superSwipe.finish({ cancelled = false })
+    check("carrying a window still has a slot below", after == 15)
 end
 
 print("ok")

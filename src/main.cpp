@@ -22,7 +22,8 @@
 #include <hyprland/src/state/WorkspaceState.hpp>
 #include <hyprland/src/desktop/state/FocusState.hpp>
 #include <hyprland/src/desktop/state/WindowState.hpp>
-#include <hyprland/src/desktop/view/Window.hpp>
+#include <hyprland/src/desktop/view/window/Window.hpp>
+#include <hyprland/src/desktop/view/window/WindowPresentation.hpp>
 #include <hyprland/src/event/EventBus.hpp>
 #include <hyprland/src/config/shared/actions/ConfigActions.hpp>
 #include <hyprland/src/desktop/view/LayerSurface.hpp>
@@ -76,7 +77,7 @@ namespace {
 
     void dropCarried() {
         if (const auto W = g_carried.lock())
-            W->m_floatingOffset = Vector2D{};
+            W->presentation().clearFloatingOffset();
         g_carried.reset();
     }
 
@@ -91,7 +92,7 @@ namespace {
         const bool SWIPING  = g_swipe && g_swipe->carry.lock() == W;
         const bool SETTLING = live(WS) && WS->m_renderOffset->isBeingAnimated();
         if (live(WS) && (SWIPING || SETTLING))
-            W->m_floatingOffset = -WS->m_renderOffset->value();
+            W->presentation().setFloatingOffset(-WS->m_renderOffset->value());
         else
             dropCarried();
     }
@@ -196,16 +197,14 @@ namespace {
 
             // The carried window goes over first, so the switch lands with it on top.
             if (CARRIED && !target)
-                target = State::workspaceState()->create(ID, MON->m_id);
+                target = create(ID, MON);
             if (CARRIED && target)
                 (void)Config::Actions::moveToWorkspace(target, true, CARRIED);
 
+            if (!target)
+                target = create(ID, MON);
             if (target)
-                MON->changeWorkspace(ID);
-            else {
-                MON->changeWorkspace(State::workspaceState()->create(ID, MON->m_id));
-                target = find(ID);
-            }
+                MON->changeWorkspace(target);
 
             // changeWorkspace starts the usual in/out animation; restart both from where
             // the fingers left them so the motion stays continuous.
@@ -231,7 +230,7 @@ namespace {
         g_pHyprRenderer->damageMonitor(MON);
         g_swipe.reset();
         g_pInputManager->refocus();
-        if (commit && CARRIED && CARRIED->m_isMapped)
+        if (commit && CARRIED && CARRIED->mapped())
             Desktop::focusState()->fullWindowFocus(CARRIED, Desktop::FOCUS_REASON_KEYBIND);
     }
 
@@ -286,7 +285,7 @@ namespace {
         s.after   = *AFTER;
 
         dropCarried();
-        if (const auto W = Desktop::focusState()->window(); CARRY && W && W->m_isMapped && W->m_workspace == s.begin) {
+        if (const auto W = Desktop::focusState()->window(); CARRY && W && W->mapped() && W->m_workspace == s.begin) {
             // drawn above the neighbour's windows as they slide in under it
             Desktop::windowState()->raise(W);
             s.carry   = W;

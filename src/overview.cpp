@@ -29,7 +29,7 @@
 #include <hyprland/src/render/Renderer.hpp>
 #include <hyprland/src/Compositor.hpp>
 #include <hyprland/src/desktop/state/FocusState.hpp>
-#include <hyprland/src/desktop/Workspace.hpp>
+#include <hyprland/src/workspace/HLWorkspace.hpp>
 #include <hyprland/src/render/OpenGL.hpp>
 #include <hyprland/src/render/Framebuffer.hpp>
 #include <hyprland/src/render/pass/ClearPassElement.hpp>
@@ -41,6 +41,7 @@
 #include <hyprland/src/config/shared/animation/AnimationTree.hpp>
 #include <hyprland/src/config/ConfigValue.hpp>
 #include <hyprland/src/config/lua/ConfigManager.hpp>
+#include <hyprland/src/config/lua/LuaCaller.hpp>
 #include <hyprland/src/managers/input/InputManager.hpp>
 #include <hyprland/src/managers/SessionLockManager.hpp>
 #include <hyprland/src/managers/eventLoop/EventLoopManager.hpp>
@@ -130,12 +131,14 @@ namespace {
     // renderWorkspace is protected. hyprexpo gets at it with #define protected
     // public, but that can change class layouts (tail padding) and so misread
     // Hyprland's own objects; a derived class can hand out the member pointer instead.
+    // (0.57: renderWorkspace is overloaded and takes the render context.)
     struct SRendererAccess : Render::IHyprRenderer {
-        static constexpr auto RENDER_WORKSPACE = &SRendererAccess::renderWorkspace;
+        static constexpr void (Render::IHyprRenderer::*RENDER_WORKSPACE)(Render::CRenderContext&, PHLMONITOR, PHLWORKSPACE, const Time::steady_tp&, const CBox&) =
+            &SRendererAccess::renderWorkspace;
     };
 
-    void renderWorkspace(const PHLMONITOR& mon, const PHLWORKSPACE& ws, const Time::steady_tp& now, const CBox& box) {
-        (g_pHyprRenderer.get()->*SRendererAccess::RENDER_WORKSPACE)(mon, ws, now, box);
+    void renderWorkspace(Render::CRenderContext& ctx, const PHLMONITOR& mon, const PHLWORKSPACE& ws, const Time::steady_tp& now, const CBox& box) {
+        (g_pHyprRenderer.get()->*SRendererAccess::RENDER_WORKSPACE)(ctx, mon, ws, now, box);
     }
 
     struct SCell {
@@ -332,7 +335,7 @@ namespace {
                 continue;
             if (WS == mon->m_activeWorkspace) {
                 WS->m_forceRendering = false;
-                WS->m_visible        = true;
+                WS->setVisible(true);
                 WS->m_alpha->setValueAndWarp(1.F);
                 WS->m_renderOffset->setValueAndWarp(Vector2D{});
             } else
@@ -504,8 +507,7 @@ namespace {
         const auto SPECIAL = mon->m_activeSpecialWorkspace;
         mon->m_activeSpecialWorkspace.reset();
 
-        g_renderingThumbs                        = true;
-        g_pHyprRenderer->m_bBlockSurfaceFeedback = true;
+        g_renderingThumbs = true;
 
         const CBox SCREEN{{}, mon->m_size};
         for (auto const& c : o.cells) {
@@ -539,24 +541,26 @@ namespace {
                 continue;
             o.drawnAt[c.id] = NOW;
 
-            g_pHyprRenderer->draw(CClearPassElement::SClearData{CHyprColor{0, 0, 0, 1}});
-            g_pHyprRenderer->startRenderPass();
+            // 0.57: per-render context; thumbnails must not send surface feedback
+            auto& ctx                  = g_pHyprRenderer->context();
+            ctx.m_blockSurfaceFeedback = true;
+            g_pHyprRenderer->draw(ctx, CClearPassElement::SClearData{CHyprColor{0, 0, 0, 1}});
+            g_pHyprRenderer->startRenderPass(ctx);
 
-            const bool VISIBLE = WS->m_visible;
+            const bool VISIBLE     = WS->visible();
             mon->m_activeWorkspace = WS;
-            WS->m_visible          = true;
+            WS->setVisible(true);
             WS->m_alpha->setValueAndWarp(1.F);
 
-            renderWorkspace(mon, WS, NOW, CBox{{}, SIZE});
+            renderWorkspace(ctx, mon, WS, NOW, CBox{{}, SIZE});
             g_pHyprRenderer->endRender();
 
             WS->m_alpha->setValueAndWarp(0.F);
-            WS->m_visible = VISIBLE;
+            WS->setVisible(VISIBLE);
             g_pHyprRenderer->sendFrameEventsToWorkspace(mon, WS, NOW);
         }
 
-        g_pHyprRenderer->m_bBlockSurfaceFeedback = false;
-        g_renderingThumbs                        = false;
+        g_renderingThumbs = false;
 
         mon->m_activeWorkspace        = ACTIVE;
         mon->m_activeSpecialWorkspace = SPECIAL;
@@ -610,14 +614,15 @@ namespace {
         mon->m_forceFullFrames = std::max(mon->m_forceFullFrames, 1);
     }
 
-    void onStage(eRenderStage stage) {
-        if (stage != RENDER_LAST_MOMENT || !g_ov || g_ov->finished || g_renderingThumbs)
+    void onStage(const Event::SRenderStageEvent& e) {
+        if (e.stage != RENDER_LAST_MOMENT || !e.context || !g_ov || g_ov->finished || g_renderingThumbs)
             return;
 
         auto&      o   = *g_ov;
         const auto MON = o.monitor.lock();
-        if (!MON || g_pHyprRenderer->renderData().pMonitor != MON)
+        if (!MON || e.monitor != MON)
             return;
+        auto& ctx = e.context->get();
 
         static auto     PROUNDING = CConfigValue<Config::INTEGER>("decoration:rounding");
         static auto     PBORDER   = CConfigValue<Config::IComplexConfigValue>("general:col.active_border");
@@ -632,7 +637,7 @@ namespace {
         CRectPassElement::SRectData backdrop;
         backdrop.box   = toPixels(FULL);
         backdrop.color = CHyprColor{0, 0, 0, BACKDROP_DIM * P};
-        g_pHyprRenderer->m_renderPass.add(makeUnique<CRectPassElement>(backdrop));
+        Render::IHyprRenderer::addPassElement(ctx, makeUnique<CRectPassElement>(backdrop));
 
         auto drawCell = [&](const SCell& c) {
             const float RESTA = UNSELECTED_ALPHA + (1.F - UNSELECTED_ALPHA) * nearness(o, c);
@@ -643,7 +648,7 @@ namespace {
                 empty.box   = toPixels(cellBox(o, MON, c));
                 empty.color = CHyprColor{1, 1, 1, EMPTY_ALPHA * RESTA * P};
                 empty.round = std::round(*PROUNDING * SCALE);
-                g_pHyprRenderer->m_renderPass.add(makeUnique<CRectPassElement>(empty));
+                Render::IHyprRenderer::addPassElement(ctx, makeUnique<CRectPassElement>(empty));
                 return;
             }
 
@@ -662,7 +667,7 @@ namespace {
             tex.a      = a;
             tex.damage = DAMAGE;
             tex.round  = std::round(round * SCALE);
-            g_pHyprRenderer->m_renderPass.add(makeUnique<CTexPassElement>(std::move(tex)));
+            Render::IHyprRenderer::addPassElement(ctx, makeUnique<CTexPassElement>(std::move(tex)));
         };
 
         // nearest the highlight on top, the anchor over everything while it zooms
@@ -687,7 +692,7 @@ namespace {
         border.a          = std::clamp(P / FRAME_FADE, 0.F, 1.F);
         border.round      = std::round(*PROUNDING * P * SCALE);
         border.borderSize = std::round(BORDER_PX * SCALE);
-        g_pHyprRenderer->m_renderPass.add(makeUnique<CBorderPassElement>(border));
+        Render::IHyprRenderer::addPassElement(ctx, makeUnique<CBorderPassElement>(border));
     }
 
     void callPick(WORKSPACEID id) {
@@ -695,13 +700,12 @@ namespace {
         const auto MGR = Config::Lua::mgr();
         if (!g_ov || !g_ov->canPick || g_pickRef == LUA_NOREF || !MGR)
             return;
-        MGR->callLuaFn(
-            g_pickRef,
-            [id](lua_State* L) {
-                lua_pushinteger(L, id);
-                return 1;
-            },
-            Config::Lua::CConfigManager::LUA_TIMEOUT_EVENT_CALLBACK_MS, "hyprcross overview pick");
+        // 0.57: calls go through the config's CLuaCaller (timeout watchdog)
+        auto&      caller = MGR->caller();
+        lua_State* L      = caller.state();
+        lua_rawgeti(L, LUA_REGISTRYINDEX, g_pickRef);
+        lua_pushinteger(L, id);
+        (void)caller.callPushed(1, Config::Lua::CLuaCaller::LUA_TIMEOUT_EVENT_CALLBACK_MS, "hyprcross overview pick");
     }
 
     void onButton(const IPointer::SButtonEvent& e, Event::SCallbackInfo& info) {
@@ -726,7 +730,7 @@ namespace {
     void listen(SOverview& o) {
         auto& ev            = Event::bus()->m_events;
         o.preListener       = ev.render.pre.listen([](PHLMONITOR mon) { onPreRender(mon); });
-        o.stageListener     = ev.render.stage.listen([](eRenderStage stage) { onStage(stage); });
+        o.stageListener     = ev.render.stage.listen([](const Event::SRenderStageEvent& e) { onStage(e); });
         o.buttonListener    = ev.input.mouse.button.listen([](const IPointer::SButtonEvent& e, Event::SCallbackInfo& info) { onButton(e, info); });
         // no hover: keep focus where it is while the cursor wanders over thumbnails
         o.moveListener      = ev.input.mouse.move.listen([](const Vector2D&, Event::SCallbackInfo& info) {
@@ -846,7 +850,7 @@ namespace cross::overview {
         o.startedOn = MON->m_activeWorkspace;
         o.cells     = *CELLS;
         o.target    = SELECTED;
-        o.anchor    = MON->m_activeWorkspace->m_id;
+        o.anchor    = idOf(MON->m_activeWorkspace);
         o.cross     = *CROSS;
 
         if (!lua_isnoneornil(L, 3)) {
@@ -951,7 +955,7 @@ namespace cross::overview {
         if (open)
             *o.progress = 1.F;
         else
-            startClosing(o.startedOn ? o.startedOn->m_id : o.anchor);
+            startClosing(o.startedOn ? idOf(o.startedOn.lock()) : o.anchor);
 
         lua_pushboolean(L, open);
         return 1;
@@ -1009,7 +1013,7 @@ namespace cross::overview {
     int luaClose(lua_State* L) {
         if (!g_ov || g_ov->closing)
             return 0;
-        WORKSPACEID id = g_ov->startedOn ? g_ov->startedOn->m_id : g_ov->anchor;
+        WORKSPACEID id = g_ov->startedOn ? idOf(g_ov->startedOn.lock()) : g_ov->anchor;
         if (lua_isinteger(L, 1))
             id = lua_tointeger(L, 1);
         g_ov->tracking = false;

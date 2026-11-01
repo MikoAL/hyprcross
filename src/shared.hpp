@@ -3,7 +3,7 @@
 
 #include <hyprland/src/state/WorkspaceState.hpp>
 #include <hyprland/src/output/Monitor.hpp>
-#include <hyprland/src/desktop/Workspace.hpp>
+#include <hyprland/src/workspace/HLWorkspace.hpp>
 #include <hyprland/src/desktop/view/LayerSurface.hpp>
 #include <hyprland/src/managers/fullscreen/FullscreenController.hpp>
 #include <hyprland/src/layout/space/Space.hpp>
@@ -11,17 +11,50 @@
 
 inline HANDLE PHANDLE = nullptr;
 
+// Hyprland 0.57 made workspace ids a variant (numbered or special) and dropped
+// WORKSPACEID / WORKSPACE_INVALID. The cross grid only ever uses numbered
+// workspaces, so keep them as plain integers here and convert at the edges.
+using WORKSPACEID = int64_t;
+inline constexpr WORKSPACEID WORKSPACE_INVALID = -1;
+
 namespace cross {
-    // Inert workspaces (being destroyed) have their animated values freed.
+    // The workspace's number, or WORKSPACE_INVALID for special/named ones.
+    inline WORKSPACEID idOf(const PHLWORKSPACE& ws) {
+        if (!ws)
+            return WORKSPACE_INVALID;
+        const auto ID = ws->id();
+        if (const auto* N = std::get_if<Workspace::SWorkspaceNumberedID>(&ID))
+            return N->value;
+        return WORKSPACE_INVALID;
+    }
+
+    inline bool validId(WORKSPACEID id) {
+        return id > 0 && id <= sc<WORKSPACEID>(UINT32_MAX);
+    }
+
+    // Creates the numbered workspace on a monitor (empty, like a fresh switch).
+    inline PHLWORKSPACE create(WORKSPACEID id, const PHLMONITOR& mon) {
+        if (!validId(id) || !mon)
+            return nullptr;
+        return State::workspaceState()->createNumbered(Workspace::SWorkspaceNumberedID(sc<Workspace::WorkspaceIDContainer>(id)), mon);
+    }
+
+    // A workspace being destroyed drops out of Hyprland's workspace state
+    // (0.57 has no inert() flag) and may have its animated values freed.
     inline bool live(const PHLWORKSPACE& ws) {
-        return ws && !ws->inert() && ws->m_alpha && ws->m_renderOffset;
+        if (!ws || !ws->m_alpha || !ws->m_renderOffset)
+            return false;
+        const auto ID = ws->id();
+        if (const auto* N = std::get_if<Workspace::SWorkspaceNumberedID>(&ID))
+            return State::workspaceState()->query().numbered(*N).run() == ws;
+        return true;
     }
 
     // A live workspace by id, or nullptr.
     inline PHLWORKSPACE find(WORKSPACEID id) {
-        if (id == WORKSPACE_INVALID)
+        if (!validId(id))
             return nullptr;
-        const auto WS = State::workspaceState()->query().id(id).run();
+        const auto WS = State::workspaceState()->query().numbered(Workspace::SWorkspaceNumberedID(sc<Workspace::WorkspaceIDContainer>(id))).run();
         return live(WS) ? WS : nullptr;
     }
 
@@ -39,7 +72,7 @@ namespace cross {
         const auto MODE     = FSWINDOW ? Fullscreen::controller()->getFullscreenModes(FSWINDOW).internal : Fullscreen::FSMODE_NONE;
         return MODE == Fullscreen::FSMODE_FULLSCREEN &&
             (!FSWINDOW || !Fullscreen::controller()->layoutManagedFS(FSWINDOW) ||
-             (ws->m_space && ws->m_space->algorithm() && Fullscreen::controller()->hasFullscreen(ws, true)));
+             (ws->space() && ws->space()->algorithm() && Fullscreen::controller()->hasFullscreen(ws, true)));
     }
 
     inline void applyFullscreenAlpha(const PHLMONITOR& mon, const PHLWORKSPACE& ws) {
