@@ -397,9 +397,11 @@ namespace {
 
     // The first notch of a burst steps at once, like Hyprland's own discrete
     // scrolling; the rest are counted out in whole notches.
+    // Holding Shift turns a vertical wheel sideways, like most apps do.
     void wheel(const IPointer::SAxisEvent& e) {
         auto&      o          = *g_ov;
-        const bool HORIZONTAL = e.axis == WL_POINTER_AXIS_HORIZONTAL_SCROLL;
+        const bool SHIFT      = static_cast<bool>(g_pInputManager->getModsFromAllKBs() & Input::HL_MODIFIER_SHIFT);
+        const bool HORIZONTAL = e.axis == WL_POINTER_AXIS_HORIZONTAL_SCROLL || SHIFT;
         const int  DIR        = e.deltaDiscrete > 0 ? 1 : -1;
         int        steps      = 0;
         if (DIR != o.wheelDir || HORIZONTAL != o.wheelHorizontal || e.timeMs - o.wheelTime > WHEEL_BURST_MS) {

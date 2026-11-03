@@ -33,7 +33,7 @@ While the overview is up:
 | Input | Does |
 |---|---|
 | 3-finger swipe / 2-finger scroll | step the highlight, like a held arrow key: one step, then more as you keep going |
-| Arrow keys / mouse wheel | step the highlight (hold an arrow to keep going) |
+| Arrow keys / mouse wheel | step the highlight (hold an arrow to keep going; Shift + wheel goes sideways) |
 | Enter / spread 3 fingers | go to the highlighted workspace |
 | Click a thumbnail | go there |
 | Escape / Super + Tab | back to where you were |
