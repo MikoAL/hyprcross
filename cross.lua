@@ -1,4 +1,6 @@
--- cross.lua (symlinked to ~/.config/hypr/cross.lua)
+-- cross.lua: put it (or a symlink to it) next to hyprland.lua and add
+-- `require("cross")` there. https://github.com/MikoAL/hyprcross
+--
 -- PS3/PS4-style "cross" workspaces: columns run left/right along the main row,
 -- and each column has slots stacked under it for windows that each want the
 -- whole screen.
@@ -38,16 +40,29 @@ local BUMP_MS  = 90  -- how long it stays out before springing back
 -- the view follows. Tab flips it while the overview is up (until the next reload).
 local OVERVIEW_MODE = "cross"
 
--- Hyprland loads registered plugins after the config has run, so look the
--- functions up when they are needed rather than now.
-local havePlugin = io.open(PLUGIN) ~= nil
-if havePlugin then hl.plugin.load(PLUGIN) end
+-- The spring every workspace switch settles with (swipes, keybinds and the
+-- overview's zoom). cross.lua sets the workspaces animations to it itself.
+local SPRING = { type = "spring", mass = 1, stiffness = 350, dampening = 38 }
 
--- After a Hyprland update the old build refuses to load; this refreshes the
--- headers, rebuilds if needed and loads the plugin (log: ~/.local/state/hyprcross-update.log).
-hl.on("hyprland.start", function()
-    hl.exec_cmd(os.getenv("HOME") .. "/Desktop/Projects/ricing/hyprcross/scripts/update.sh")
-end)
+-- If this file is a symlink into a hyprcross checkout, run its
+-- scripts/update.sh at login: after a Hyprland update the old build refuses to
+-- load, so it refreshes the headers, rebuilds and loads the fresh plugin
+-- (log: ~/.local/state/hyprcross-update.log). Not needed with hyprpm.
+local AUTO_REBUILD = true
+
+-- Without hyprpm: the manually installed build (`make install`) is loaded from
+-- here. With hyprpm, `hyprpm reload` loads it and this file isn't there.
+-- Hyprland loads registered plugins after the config has run, so the plugin's
+-- functions are looked up when they are needed rather than now.
+if io.open(PLUGIN) then hl.plugin.load(PLUGIN) end
+
+local SELF = package.searchpath and package.searchpath(..., package.path)
+if AUTO_REBUILD and SELF then
+    -- resolved by the shell at login, so a plain copy of this file just does nothing
+    local cmd = [[sh -c 's="$(dirname "$(readlink -f "$1")")/scripts/update.sh"; [ -x "$s" ] && exec "$s"' sh ']]
+        .. SELF:gsub("'", [['\'']]) .. "'"
+    hl.on("hyprland.start", function() hl.exec_cmd(cmd) end)
+end
 
 local function plugin()
     local p = hl.plugin.cross
@@ -76,12 +91,14 @@ local function occupied(id)
     return w ~= nil and w.windows > 0
 end
 
--- Keep in sync with the workspaces animations in hyprland.lua.
+hl.curve("crossSnap", SPRING)
+
 local function slide(style)
     for _, leaf in ipairs({ "workspaces", "workspacesIn", "workspacesOut" }) do
-        hl.animation({ leaf = leaf, enabled = true, speed = 1, spring = "wsSnap", style = style })
+        hl.animation({ leaf = leaf, enabled = true, speed = 1, spring = "crossSnap", style = style })
     end
 end
+slide("slide")
 
 local function go(col, row, carry)
     local here = current()

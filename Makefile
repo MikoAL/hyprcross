@@ -10,7 +10,7 @@ PREFIX   ?= $(HOME)/.local/lib/hyprland
 SRCS = src/main.cpp src/overview.cpp
 
 # Rebuild whenever hyprpm refreshes the headers for a new Hyprland (version.h changes).
-HL_VERSION_H = $(firstword $(patsubst -I%/src,%/src,$(filter -I%/src,$(shell pkg-config --cflags hyprland))))/version.h
+HL_VERSION_H = $(wildcard $(firstword $(patsubst -I%/src,%/src,$(filter -I%/src,$(shell pkg-config --cflags hyprland))))/version.h)
 
 hyprcross.so: $(SRCS) src/shared.hpp src/overview.hpp $(HL_VERSION_H)
 	$(CXX) $(CXXFLAGS) $(shell pkg-config --cflags $(PKGS)) $(SRCS) -o $@

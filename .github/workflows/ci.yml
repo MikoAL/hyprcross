@@ -1,0 +1,22 @@
+name: ci
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    container: archlinux:latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install dependencies
+        run: pacman -Syu --noconfirm --needed base-devel pkgconf lua hyprland pixman libdrm
+
+      - name: Lua tests
+        run: make test
+
+      # Builds against Arch's current Hyprland; a failure here after a Hyprland release usually means the plugin needs porting.
+      - name: Build plugin
+        run: make

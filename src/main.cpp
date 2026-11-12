@@ -443,7 +443,7 @@ APICALL EXPORT PLUGIN_DESCRIPTION_INFO PLUGIN_INIT(HANDLE handle) {
     overview::init();
     g_preRender = Event::bus()->m_events.render.pre.listen([](PHLMONITOR) { holdCarried(); });
 
-    return {"hyprcross", "Finger-tracking swipes and a pinch overview for PS-style cross workspaces", "miko", "0.1.0"};
+    return {"hyprcross", "Finger-tracking swipes and a pinch overview for PS-style cross workspaces", "MikoAL", "0.1.0"};
 }
 
 APICALL EXPORT void PLUGIN_EXIT() {

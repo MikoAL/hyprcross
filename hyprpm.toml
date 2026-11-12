@@ -1,0 +1,9 @@
+[repository]
+name = "hyprcross"
+authors = ["MikoAL"]
+
+[hyprcross]
+description = "PS3/PS4-style cross workspaces: finger-tracking swipes and a pinch overview"
+authors = ["MikoAL"]
+output = "hyprcross.so"
+build = ["make all"]
