@@ -59,6 +59,10 @@ namespace {
     constexpr double COMMIT_RATIO = 0.5;
     constexpr int    VELOCITY_MS  = 80;
 
+    // Super + swipe: how small the carried window shrinks while it's held, so the
+    // workspaces sliding behind it show. It springs back when it's put down.
+    constexpr double LIFT_SCALE = 0.86;
+
     struct SSwipe {
         PHLWORKSPACE  begin;
         PHLMONITORREF monitor;
@@ -74,6 +78,32 @@ namespace {
     PHLWORKSPACEREF       g_bumped;
     PHLWINDOWREF          g_carried; // held still until its workspace stops moving
     CHyprSignalListener   g_preRender;
+
+    // Where the carried window sat before it was lifted (animation goals).
+    struct SLift {
+        PHLWINDOWREF window;
+        Vector2D     pos, size, liftedSize;
+    };
+    std::optional<SLift> g_lift;
+
+    // Shrink it around its middle. Only the drawn box changes; the client isn't told.
+    void lift(const PHLWINDOW& w) {
+        const Vector2D POS = w->positionAnimation()->goal(), SIZE = w->sizeAnimation()->goal();
+        g_lift = SLift{w, POS, SIZE, SIZE * LIFT_SCALE};
+        *w->positionAnimation() = POS + SIZE * (1.0 - LIFT_SCALE) / 2.0;
+        *w->sizeAnimation()     = SIZE * LIFT_SCALE;
+    }
+
+    // Spring back to full size, unless the layout has already placed it somewhere new.
+    void putDown() {
+        if (!g_lift)
+            return;
+        if (const auto W = g_lift->window.lock(); W && W->sizeAnimation()->goal() == g_lift->liftedSize) {
+            *W->positionAnimation() = g_lift->pos;
+            *W->sizeAnimation()     = g_lift->size;
+        }
+        g_lift.reset();
+    }
 
     void dropCarried() {
         if (const auto W = g_carried.lock())
@@ -229,6 +259,7 @@ namespace {
 
         g_pHyprRenderer->damageMonitor(MON);
         g_swipe.reset();
+        putDown();
         g_pInputManager->refocus();
         if (commit && CARRIED && CARRIED->mapped())
             Desktop::focusState()->fullWindowFocus(CARRIED, Desktop::FOCUS_REASON_KEYBIND);
@@ -288,6 +319,8 @@ namespace {
         if (const auto W = Desktop::focusState()->window(); CARRY && W && W->mapped() && W->m_workspace == s.begin) {
             // drawn above the neighbour's windows as they slide in under it
             Desktop::windowState()->raise(W);
+            putDown();
+            lift(W);
             s.carry   = W;
             g_carried = W;
         }
@@ -419,6 +452,7 @@ APICALL EXPORT void PLUGIN_EXIT() {
         finish(true);
     g_swipe.reset();
     g_preRender.reset();
+    putDown();
     dropCarried();
     if (const auto WS = g_bumped.lock(); live(WS))
         *WS->m_renderOffset = Vector2D{};

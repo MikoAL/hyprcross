@@ -25,7 +25,7 @@ that both want the whole screen can live in the same column. Workspace id is
 | Super + 1-0 / Super + Shift + 1-0 | a column, on the slot you last left it on / send the window there |
 | Super + scroll | prev/next column |
 | 3-finger swipe | drag between columns and slots |
-| Super + 3-finger swipe | the same, carrying the focused window: it stays under your fingers while the workspaces slide behind it |
+| Super + 3-finger swipe | the same, carrying the focused window: it lifts (shrinks a little) and stays under your fingers while the workspaces slide behind it |
 | 3-finger pinch in / Super + Tab | overview: the screen shrinks into a grid of every column and slot |
 
 While the overview is up:
@@ -62,7 +62,7 @@ falls back to switching on release with no rubber band, and the pinch does nothi
 
 ## Tuning
 
-- `src/main.cpp`: `RUBBER_LIMIT` / `RUBBER_COEFF` (how far and how stiffly an edge
+- `src/main.cpp`: `LIFT_SCALE` (how small a carried window gets), `RUBBER_LIMIT` / `RUBBER_COEFF` (how far and how stiffly an edge
   stretches), `FLICK_SPEED` / `COMMIT_RATIO` (when a swipe commits on release).
 - `src/overview.cpp`: `THUMB_FRAC` / `SELECTED_SCALE` / `GAP_X` / `GAP_Y` (cross
   layout), `BACKDROP_DIM` / `UNSELECTED_ALPHA` / `BORDER_PX` (look),

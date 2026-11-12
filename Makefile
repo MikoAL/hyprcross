@@ -9,7 +9,10 @@ PREFIX   ?= $(HOME)/.local/lib/hyprland
 
 SRCS = src/main.cpp src/overview.cpp
 
-hyprcross.so: $(SRCS) src/shared.hpp src/overview.hpp
+# Rebuild whenever hyprpm refreshes the headers for a new Hyprland (version.h changes).
+HL_VERSION_H = $(firstword $(patsubst -I%/src,%/src,$(filter -I%/src,$(shell pkg-config --cflags hyprland))))/version.h
+
+hyprcross.so: $(SRCS) src/shared.hpp src/overview.hpp $(HL_VERSION_H)
 	$(CXX) $(CXXFLAGS) $(shell pkg-config --cflags $(PKGS)) $(SRCS) -o $@
 
 all: hyprcross.so
@@ -22,6 +25,10 @@ reload: install
 	-hyprctl plugin unload $(PREFIX)/hyprcross.so
 	hyprctl plugin load $(PREFIX)/hyprcross.so
 
+# What runs at login: refresh hyprpm's headers, rebuild if they changed, load if needed.
+update:
+	scripts/update.sh
+
 # Lua logic that doesn't need Hyprland (cross layout, gesture routing).
 test:
 	lua5.5 tests/cells_test.lua
@@ -31,4 +38,4 @@ test:
 clean:
 	rm -f hyprcross.so
 
-.PHONY: all install reload test clean
+.PHONY: all install reload update test clean

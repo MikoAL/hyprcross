@@ -43,6 +43,12 @@ local OVERVIEW_MODE = "cross"
 local havePlugin = io.open(PLUGIN) ~= nil
 if havePlugin then hl.plugin.load(PLUGIN) end
 
+-- After a Hyprland update the old build refuses to load; this refreshes the
+-- headers, rebuilds if needed and loads the plugin (log: ~/.local/state/hyprcross-update.log).
+hl.on("hyprland.start", function()
+    hl.exec_cmd(os.getenv("HOME") .. "/Desktop/Projects/ricing/hyprcross/scripts/update.sh")
+end)
+
 local function plugin()
     local p = hl.plugin.cross
     return p and p.swipe_begin and p or nil
@@ -260,6 +266,9 @@ local function ovOpen()
     if ov.open then hl.dispatch(hl.dsp.submap("cross_overview")) end
 end
 hl.bind("SUPER + Tab", ovOpen)
+-- for other binds and gestures in hyprland.lua (e.g. 4-finger up/down)
+M.overviewOpen  = ovOpen
+M.overviewClose = ovCancel
 
 -- Hyprland names pinches by zoom: fingers coming together (scale < 1) is
 -- "pinchout", spreading them is "pinchin".
